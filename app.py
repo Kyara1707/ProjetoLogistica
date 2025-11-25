@@ -4,6 +4,9 @@ import os
 from datetime import datetime
 import time
 
+# --- LISTA DE SUPERVISORES (ACESSO EXCLUSIVO A BÔNUS) ---
+SUPERVISORES_PERMITIDOS = ['99849441', '99813623', '99797465']
+
 # --- CONFIGURAÇÃO DE PREÇOS DO REPACK ---
 PRECOS_REPACK = {
     'Lata': 0.10,
@@ -77,7 +80,7 @@ def init_data():
         df_regras = pd.DataFrame(NOVAS_REGRAS)
         df_regras.to_csv(f"{FILES_PATH}/rules.csv", index=False, sep=';', encoding='latin1')
     except PermissionError:
-        st.error("ERRO: Feche o Excel!")
+        pass 
 
     if not os.path.exists(f"{FILES_PATH}/users.csv"):
         pd.DataFrame(columns=['nome', 'id_login', 'tipo', 'rv_acumulada']).to_csv(f"{FILES_PATH}/users.csv", sep=';', index=False)
@@ -114,7 +117,6 @@ def get_data(filename):
             if 'id_login' in df.columns: 
                 df['id_login'] = df['id_login'].astype(str).str.strip()
             
-            # TRATAMENTO CRÍTICO DA RV PARA GARANTIR SOMA
             if 'rv_acumulada' in df.columns:
                 df['rv_acumulada'] = df['rv_acumulada'].astype(str).str.replace(',', '.')
                 df['rv_acumulada'] = pd.to_numeric(df['rv_acumulada'], errors='coerce').fillna(0.0)
@@ -152,27 +154,19 @@ def update_task_safe(task_id, updates):
             df.at[idx[0], col] = val
         save_data(df, "tasks")
 
-# --- CORREÇÃO DA SOMA DA RV ---
 def update_rv_safe(user_id, amount):
     df = get_data("users")
-    
-    # Garante que os IDs sejam strings limpas para bater
     user_id = str(user_id).strip()
     df['id_login'] = df['id_login'].astype(str).str.strip()
     
     idx = df[df['id_login'] == user_id].index
-    
     if not idx.empty:
-        # Pega valor atual garantindo que é numero
         atual = df.at[idx[0], 'rv_acumulada']
         novo_saldo = float(atual) + float(amount)
-        
         df.at[idx[0], 'rv_acumulada'] = novo_saldo
         save_data(df, "users")
         return True
-    else:
-        st.error(f"Erro ao pagar: Usuário ID {user_id} não encontrado no cadastro.")
-        return False
+    return False
 
 # --- LOGIN ---
 def login_screen():
@@ -191,13 +185,73 @@ def login_screen():
             if not user.empty:
                 st.session_state['user_id'] = str(user.iloc[0]['id_login'])
                 st.session_state['user_name'] = user.iloc[0]['nome']
-                role = str(user.iloc[0]['tipo']).lower()
-                st.session_state['user_role'] = 'Conferente' if 'conferente' in role else 'Colaborador'
+                
+                # LÓGICA DE CARGOS
+                # 1. Verifica se é Supervisor pelo ID
+                if str(user.iloc[0]['id_login']) in SUPERVISORES_PERMITIDOS:
+                    st.session_state['user_role'] = 'Supervisor'
+                # 2. Se não for, verifica se é Conferente pelo Cargo
+                elif 'conferente' in str(user.iloc[0]['tipo']).lower():
+                    st.session_state['user_role'] = 'Conferente'
+                # 3. Senão, é Colaborador
+                else:
+                    st.session_state['user_role'] = 'Colaborador'
+                
                 st.rerun()
             else:
                 st.error("Usuário não encontrado.")
 
-# --- CONFERENTE ---
+# --- INTERFACE DO SUPERVISOR (NOVA) ---
+def interface_supervisor():
+    st.sidebar.header(f"👮 {st.session_state['user_name']}")
+    st.sidebar.badge("Supervisor")
+    menu = st.sidebar.radio("Menu", ["Lançar Bônus", "Ranking", "Sair"])
+    
+    users = get_data("users")
+
+    if menu == "Sair":
+        st.session_state.clear()
+        st.rerun()
+
+    elif menu == "Lançar Bônus":
+        st.title("💰 Lançar Bônus / Extra")
+        st.markdown("---")
+        st.info("Adicione valores diretamente ao saldo do colaborador (Ex: Premiação, Ajuste).")
+        
+        with st.form("bonus_form"):
+            # Filtra todos que NÃO são supervisores
+            ops = users[~users['id_login'].isin(SUPERVISORES_PERMITIDOS)]['nome'].tolist()
+            
+            colab_bonus = st.selectbox("Colaborador", ops)
+            valor_bonus = st.number_input("Valor do Bônus (R$)", min_value=0.0, step=1.0)
+            motivo_bonus = st.text_input("Motivo (Ex: Meta Batida)")
+            
+            if st.form_submit_button("CONFIRMAR LANÇAMENTO"):
+                if valor_bonus > 0 and motivo_bonus:
+                    cid = users[users['nome'] == colab_bonus].iloc[0]['id_login']
+                    
+                    # 1. Atualiza Saldo
+                    if update_rv_safe(cid, valor_bonus):
+                        # 2. Cria registro no histórico
+                        task_log = {
+                            'id_task': int(time.time()), 'colaborador_id': str(cid), 'conferente_id': st.session_state['user_id'],
+                            'atividade': "BÔNUS SUPERVISOR", 'area': "ADM", 'descricao': motivo_bonus, 'prioridade': 'Alta',
+                            'status': 'Executada', 'valor': float(valor_bonus), 'data_criacao': datetime.now().strftime("%d/%m %H:%M"),
+                            'inicio_execucao': "-", 'fim_execucao': "-", 'tempo_total_min': 0, 'obs_rejeicao': "",
+                            'qtd_lata': 0, 'qtd_pet': 0, 'qtd_oneway': 0, 'qtd_longneck': 0, 'evidencia_img': ""
+                        }
+                        add_task_safe(task_log)
+                        st.success(f"Sucesso! Adicionado {format_currency(valor_bonus)} para {colab_bonus}.")
+                    else:
+                        st.error("Erro ao atualizar saldo.")
+                else:
+                    st.warning("Preencha valor e motivo.")
+
+    elif menu == "Ranking":
+        st.title("🏆 Ranking Geral")
+        st.dataframe(users[['nome', 'rv_acumulada']].sort_values('rv_acumulada', ascending=False), use_container_width=True)
+
+# --- INTERFACE DO CONFERENTE (SEM BÔNUS) ---
 def interface_conferente():
     st.sidebar.header(f"👤 {st.session_state['user_name']}")
     st.sidebar.badge("Conferente")
@@ -213,6 +267,7 @@ def interface_conferente():
     elif menu == "Criar Tarefa":
         st.title("📋 Nova Atividade")
         with st.form("task_form"):
+            # Filtra apenas Operadores/Ajudantes
             ops = users[~users['tipo'].str.lower().str.contains('conferente', na=False)]['nome'].tolist()
             atvs = rules['atividade'].tolist() if not rules.empty else []
             
@@ -252,27 +307,23 @@ def interface_conferente():
                 with st.container():
                     st.markdown(f"**{name}** - {row['atividade']}")
                     c1, c2 = st.columns(2)
-                    c1.write(f"⏱️ Tempo: {row['tempo_total_min']}m")
+                    c1.write(f"⏱️ {row['tempo_total_min']}m")
+                    if row['atividade'] in ['REPACK', 'Repack']:
+                        c1.info(f"L:{row['qtd_lata']} P:{row['qtd_pet']} OW:{row['qtd_oneway']} LN:{row['qtd_longneck']}")
                     
-                    if row['atividade'] == 'REPACK' or row['atividade'] == 'Repack':
-                        c1.info(f"🥫 Lata:{row['qtd_lata']} | 🍾 PET:{row['qtd_pet']} | 🧊 OW:{row['qtd_oneway']} | 🍺 LN:{row['qtd_longneck']}")
+                    c1.metric("A Pagar", format_currency(row['valor']))
                     
-                    c1.metric("💰 Valor Total a Pagar", format_currency(row['valor']))
-
                     if pd.notna(row['evidencia_img']) and row['evidencia_img']:
                         if os.path.exists(row['evidencia_img']):
                             try: c2.image(row['evidencia_img'], width=150)
-                            except: c2.warning("Img erro")
+                            except: pass
                     
                     b1, b2 = st.columns(2)
                     if b1.button("✅ Aprovar", key=f"ok{row['id_task']}"):
-                        # ATUALIZA O SALDO
-                        pago = update_rv_safe(row['colaborador_id'], row['valor'])
-                        
-                        if pago:
+                        if update_rv_safe(row['colaborador_id'], row['valor']):
                             update_task_safe(row['id_task'], {'status': 'Executada'})
-                            st.success(f"Pago R$ {row['valor']} para {name}!")
-                            time.sleep(1)
+                            st.success("Pago!")
+                            time.sleep(0.5)
                             st.rerun()
                     
                     with b2:
@@ -300,10 +351,8 @@ def interface_colaborador():
         st.rerun()
 
     elif menu == "Dashboard":
-        # RECARREGA DADOS PARA GARANTIR SALDO ATUALIZADO
         users = get_data("users")
         tasks = get_data("tasks")
-        
         st.title("📊 Dashboard")
         udata = users[users['id_login'] == my_id].iloc[0]
         hrs = 0
@@ -324,7 +373,7 @@ def interface_colaborador():
                 todo = tasks[(tasks['colaborador_id'] == my_id) & (tasks['status'].isin(['Pendente', 'Rejeitada', 'Em Execução']))]
                 if todo.empty: st.info("Nada pendente.")
                 for i, row in todo.iterrows():
-                    with st.expander(f"{row['atividade']} ({row['status']})", expanded=True):
+                    with st.expander(f"{row['atividade']} ({row['status']})"):
                         st.write(f"Local: {row['area']} | Obs: {row['descricao']}")
                         if row['status'] == 'Rejeitada': st.error(f"Motivo: {row['obs_rejeicao']}")
                         
@@ -341,45 +390,37 @@ def interface_colaborador():
                                 st.rerun()
                         
                         if st.session_state.get('fid') == row['id_task']:
-                            st.markdown("---")
-                            st.write(f"Tempo: {st.session_state['fdur']} min")
-                            
                             with st.form(f"f{row['id_task']}"):
                                 lata, pet, ow, ln = 0, 0, 0, 0
                                 qtd_prod = 1.0
                                 valor_base = row['valor']
                                 valor_final = 0.0
                                 
-                                if row['atividade'] == 'REPACK' or row['atividade'] == 'Repack':
-                                    st.subheader("Produção Repack")
-                                    c1, c2, c3, c4 = st.columns(4)
+                                if row['atividade'] in ['REPACK', 'Repack']:
+                                    c1,c2,c3,c4 = st.columns(4)
                                     lata = c1.number_input("Lata", 0)
                                     pet = c2.number_input("PET", 0)
                                     ow = c3.number_input("OneWay", 0)
                                     ln = c4.number_input("LongNeck", 0)
-                                    valor_final = (lata * PRECOS_REPACK['Lata']) + (pet * PRECOS_REPACK['PET']) + (ow * PRECOS_REPACK['OneWay']) + (ln * PRECOS_REPACK['LongNeck'])
+                                    valor_final = (lata*PRECOS_REPACK['Lata']) + (pet*PRECOS_REPACK['PET']) + (ow*PRECOS_REPACK['OneWay']) + (ln*PRECOS_REPACK['LongNeck'])
                                 else:
-                                    st.info(f"Valor Unitário/Base: {format_currency(valor_base)}")
-                                    qtd_prod = st.number_input("Quantidade Realizada:", min_value=1.0, value=1.0, step=1.0)
+                                    st.info(f"Base: {format_currency(valor_base)}")
+                                    qtd_prod = st.number_input("Qtd", 1.0, step=1.0)
                                     valor_final = valor_base * qtd_prod
-
-                                st.caption(f"💰 Valor Total: {format_currency(valor_final)}")
-                                foto = st.file_uploader("Foto")
                                 
-                                if st.form_submit_button("Entregar"):
-                                    p = f"{IMGS_PATH}/{row['id_task']}_{foto.name}" if foto else ""
+                                st.write(f"Total: {format_currency(valor_final)}")
+                                foto = st.file_uploader("Foto")
+                                if st.form_submit_button("Enviar"):
+                                    pth = f"images/{row['id_task']}_{foto.name}" if foto else ""
                                     if foto:
-                                        with open(p, "wb") as f: f.write(foto.getbuffer())
+                                        with open(pth, "wb") as f: f.write(foto.getbuffer())
                                     
                                     update_task_safe(row['id_task'], {
-                                        'status': 'Aguardando Aprovação',
-                                        'tempo_total_min': st.session_state['fdur'],
-                                        'evidencia_img': p,
-                                        'qtd_lata': lata, 'qtd_pet': pet, 'qtd_oneway': ow, 'qtd_longneck': ln,
-                                        'valor': valor_final
+                                        'status': 'Aguardando Aprovação', 'tempo_total_min': st.session_state['fdur'],
+                                        'evidencia_img': pth, 'qtd_lata': lata, 'qtd_pet': pet, 'qtd_oneway': ow, 'qtd_longneck': ln, 'valor': valor_final
                                     })
                                     del st.session_state['fid']
-                                    st.success("Entregue!")
+                                    st.success("Enviado!")
                                     st.rerun()
         with t2:
             tasks = get_data("tasks")
@@ -392,57 +433,42 @@ def interface_colaborador():
         users = get_data("users")
         rules = get_data("rules")
         st.title("🙋 Auto-Cadastro")
-        confs_df = users[users['tipo'].str.lower().str.contains('conferente', na=False)]
-        if confs_df.empty:
-            st.warning("⚠️ Conferente não identificado. Usando lista geral.")
-            confs = users['nome'].tolist()
-        else:
-            confs = confs_df['nome'].tolist()
-            
+        confs = users[users['tipo'].str.lower().str.contains('conferente', na=False)]['nome'].tolist()
+        
         with st.form("auto"):
             quem = st.selectbox("Aprovador", confs)
             atvs = rules['atividade'].tolist() if not rules.empty else []
             oq = st.selectbox("Atividade", atvs)
             loc = st.text_input("Local")
-            # CAMPO DE OBSERVAÇÃO NOVO
-            obs_user = st.text_area("Observação / Detalhes")
+            obs_user = st.text_area("Obs")
             
             if st.form_submit_button("Cadastrar"):
-                try:
-                    cid = users[users['nome'] == quem].iloc[0]['id_login']
-                    val = 0.0
-                    if not rules.empty:
-                        val_row = rules.loc[rules['atividade'] == oq, 'valor']
-                        if not val_row.empty: val = val_row.values[0]
-                    
-                    desc_final = obs_user if obs_user else "Auto-Cadastro"
-
-                    task = {
-                        'id_task': int(time.time()), 'colaborador_id': my_id, 'conferente_id': str(cid),
-                        'atividade': oq, 'area': loc, 'descricao': desc_final, 'prioridade': 'Média',
-                        'status': 'Pendente', 'valor': float(val), 'data_criacao': datetime.now().strftime("%d/%m %H:%M"),
-                        'inicio_execucao': None, 'fim_execucao': None, 'tempo_total_min': 0, 'obs_rejeicao': '',
-                        'qtd_lata': 0, 'qtd_pet': 0, 'qtd_oneway': 0, 'qtd_longneck': 0, 'evidencia_img': ''
-                    }
-                    add_task_safe(task)
-                    st.success("Sucesso!")
-                except Exception as e: st.error(f"Erro: {e}")
+                cid = users[users['nome'] == quem].iloc[0]['id_login']
+                val = rules.loc[rules['atividade'] == oq, 'valor'].values[0] if not rules.empty else 0.0
+                desc_final = obs_user if obs_user else "Auto"
+                task = {
+                    'id_task': int(time.time()), 'colaborador_id': my_id, 'conferente_id': str(cid),
+                    'atividade': oq, 'area': loc, 'descricao': desc_final, 'prioridade': 'Média',
+                    'status': 'Pendente', 'valor': float(val), 'data_criacao': datetime.now().strftime("%d/%m %H:%M"),
+                    'inicio_execucao': "", 'fim_execucao': "", 'tempo_total_min': 0, 'obs_rejeicao': "",
+                    'qtd_lata': 0, 'qtd_pet': 0, 'qtd_oneway': 0, 'qtd_longneck': 0, 'evidencia_img': ""
+                }
+                add_task_safe(task)
+                st.success("Salvo!")
 
     elif menu == "Regras":
         rules = get_data("rules")
-        st.title("💰 Valores")
-        if not rules.empty and 'valor' in rules.columns:
-            rules_view = rules.copy()
-            rules_view['valor'] = rules_view['valor'].apply(format_currency)
-            st.table(rules_view[['atividade', 'valor']])
-        else:
-            st.warning("Sem regras.")
+        if not rules.empty:
+            rules['fmt'] = rules['valor'].apply(format_currency)
+            st.table(rules[['atividade', 'fmt']])
 
 # --- RUN ---
 if 'user_id' not in st.session_state:
     login_screen()
 else:
-    if st.session_state['user_role'] == 'Conferente':
+    if st.session_state['user_role'] == 'Supervisor':
+        interface_supervisor()
+    elif st.session_state['user_role'] == 'Conferente':
         interface_conferente()
     else:
         interface_colaborador()
