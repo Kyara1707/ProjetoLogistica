@@ -4,7 +4,19 @@ import os
 from datetime import datetime
 import time
 
-# --- LISTA DE SUPERVISORES (ACESSO EXCLUSIVO A BÔNUS) ---
+# --- LISTAS DE CATEGORIAS (PARA DEFINIR A UNIDADE DE MEDIDA) ---
+ATIVIDADES_POR_CARRO = [
+    "AMARRAÇÃO", 
+    "DESCARREGAMENTO DE VAN"
+]
+
+ATIVIDADES_POR_DIA = [
+    "MÁQUINA LIMPEZA", 
+    "5S MARIA MOLE", 
+    "5S PICKING/ABASTECIMENTO"
+]
+
+# --- LISTA DE SUPERVISORES ---
 SUPERVISORES_PERMITIDOS = ['99849441', '99813623', '99797465']
 
 # --- CONFIGURAÇÃO DE PREÇOS DO REPACK ---
@@ -92,7 +104,7 @@ def get_data(filename):
     path = f"{FILES_PATH}/{filename}.csv"
     if not os.path.exists(path):
         if filename == 'tasks':
-             cols = ['id_task', 'colaborador_id', 'conferente_id', 'atividade', 'area', 'descricao', 'sku_produto', 'prioridade', 'status', 'valor', 'data_criacao', 'inicio_execucao', 'fim_execucao', 'tempo_total_min', 'obs_rejeicao', 'qtd_lata', 'qtd_pet', 'qtd_oneway', 'qtd_longneck', 'evidencia_img']
+             cols = ['id_task', 'colaborador_id', 'conferente_id', 'atividade', 'area', 'descricao', 'sku_produto', 'prioridade', 'status', 'valor', 'data_criacao', 'inicio_execucao', 'fim_execucao', 'tempo_total_min', 'obs_rejeicao', 'qtd_lata', 'qtd_pet', 'qtd_oneway', 'qtd_longneck', 'qtd_produzida', 'evidencia_img']
              return pd.DataFrame(columns=cols)
         return pd.DataFrame()
 
@@ -131,10 +143,11 @@ def get_data(filename):
                  df['valor'] = pd.to_numeric(df['valor'], errors='coerce').fillna(0.0)
             if 'tempo_total_min' in df.columns:
                  df['tempo_total_min'] = pd.to_numeric(df['tempo_total_min'], errors='coerce').fillna(0.0)
+            if 'qtd_produzida' in df.columns:
+                 df['qtd_produzida'] = pd.to_numeric(df['qtd_produzida'], errors='coerce').fillna(0.0)
 
         elif filename == 'sku':
             df = df.dropna(how='all')
-            # Limpa cabeçalhos do SKU para evitar espaços (ex: " Material" vira "Material")
             df.columns = df.columns.str.strip()
 
         return df
@@ -177,19 +190,11 @@ def update_rv_safe(user_id, amount):
         return True
     return False
 
-# --- FUNÇÃO DE BUSCA SKU (TRAVADA) ---
 def buscar_sku_interface():
-    # Carrega arquivo
     df_sku = get_data("sku")
-    
-    # Campo para digitar código
     codigo_input = st.text_input("Digite o Código do Produto:")
-    
     material_encontrado = ""
-    
     if codigo_input and not df_sku.empty:
-        # Tenta achar o código
-        # Converte para string e remove espaços para comparar
         try:
             resultado = df_sku[df_sku['Código Promax'].astype(str).str.strip() == codigo_input.strip()]
             if not resultado.empty:
@@ -198,11 +203,7 @@ def buscar_sku_interface():
                 material_encontrado = "❌ PRODUTO NÃO ENCONTRADO"
         except:
             material_encontrado = "⚠️ Erro na leitura do arquivo SKU"
-            
-    # Campo travado (disabled) que mostra o resultado
     st.text_input("Material (Busca Automática)", value=material_encontrado, disabled=True)
-    
-    # Retorna string formatada para salvar
     if material_encontrado and "❌" not in material_encontrado:
         return f"{codigo_input} - {material_encontrado}"
     return "-"
@@ -291,8 +292,6 @@ def interface_conferente():
 
     elif menu == "Criar Tarefa":
         st.title("📋 Nova Atividade")
-        
-        # Chama a função de busca e guarda o resultado
         sku_resultado = buscar_sku_interface()
 
         with st.form("task_form"):
@@ -301,7 +300,6 @@ def interface_conferente():
             
             colab = st.selectbox("Colaborador", ops)
             atv = st.selectbox("Atividade", atvs)
-            
             area = st.text_input("Local")
             obs = st.text_area("Obs")
             prio = st.select_slider("Prioridade", ["Baixa", "Média", "Alta"])
@@ -316,11 +314,11 @@ def interface_conferente():
                     task = {
                         'id_task': int(time.time()), 'colaborador_id': str(cid), 'conferente_id': st.session_state['user_id'],
                         'atividade': atv, 'area': area, 'descricao': obs, 
-                        'sku_produto': sku_resultado, # Salva o SKU encontrado
+                        'sku_produto': sku_resultado, 
                         'prioridade': prio, 'status': 'Pendente',
                         'valor': float(val), 'data_criacao': datetime.now().strftime("%d/%m %H:%M"),
                         'inicio_execucao': None, 'fim_execucao': None, 'tempo_total_min': 0, 'obs_rejeicao': '',
-                        'qtd_lata': 0, 'qtd_pet': 0, 'qtd_oneway': 0, 'qtd_longneck': 0, 'evidencia_img': ''
+                        'qtd_lata': 0, 'qtd_pet': 0, 'qtd_oneway': 0, 'qtd_longneck': 0, 'qtd_produzida': 0, 'evidencia_img': ''
                     }
                     add_task_safe(task)
                     st.success(f"Criada! SKU: {sku_resultado}")
@@ -338,12 +336,20 @@ def interface_conferente():
                     st.markdown(f"**{name}** - {row['atividade']}")
                     
                     sku_info = row['sku_produto'] if 'sku_produto' in row and pd.notna(row['sku_produto']) else "-"
-                    st.info(f"📦 Material: {sku_info}")
+                    st.caption(f"📦 Material: {sku_info}")
 
                     c1, c2 = st.columns(2)
                     c1.write(f"⏱️ {row['tempo_total_min']}m")
+                    
+                    # LOGICA DE VISUALIZACAO POR UNIDADE NA APROVAÇÃO
                     if row['atividade'] in ['REPACK', 'Repack']:
-                        c1.info(f"L:{row['qtd_lata']} P:{row['qtd_pet']} OW:{row['qtd_oneway']} LN:{row['qtd_longneck']}")
+                        c1.info(f"🥫L:{row['qtd_lata']} 🍾P:{row['qtd_pet']} 🧊OW:{row['qtd_oneway']} 🍺LN:{row['qtd_longneck']}")
+                    elif row['atividade'] in ATIVIDADES_POR_CARRO:
+                        c1.info(f"🚛 {row['qtd_produzida']} Carro(s)")
+                    elif row['atividade'] in ATIVIDADES_POR_DIA:
+                        c1.info(f"📅 1 Diária") # FIXO EM 1 NA VISUALIZAÇÃO
+                    else:
+                        c1.info(f"📦 {row['qtd_produzida']} Palete(s)")
                     
                     c1.metric("A Pagar", format_currency(row['valor']))
                     
@@ -385,22 +391,19 @@ def interface_colaborador():
         tasks = get_data("tasks")
         st.title("📊 Dashboard")
         
-        # Filtro de segurança para o Dashboard
         user_row = users[users['id_login'] == my_id]
         if not user_row.empty:
             udata = user_row.iloc[0]
-            
             hrs = 0
             if not tasks.empty:
                 done = tasks[(tasks['colaborador_id'] == my_id) & (tasks['status'] == 'Executada')]
-                # CORREÇÃO: Garante que tempo é numérico antes de somar
                 hrs = pd.to_numeric(done['tempo_total_min'], errors='coerce').sum() / 60
             
             c1, c2 = st.columns(2)
             c1.metric("RV (R$)", format_currency(udata['rv_acumulada']))
             c2.metric("Horas", f"{hrs:.1f}")
         else:
-            st.error("Erro ao carregar dados do usuário.")
+            st.error("Erro ao carregar dados.")
 
     elif menu == "Tarefas":
         tasks = get_data("tasks")
@@ -413,7 +416,6 @@ def interface_colaborador():
                 for i, row in todo.iterrows():
                     with st.expander(f"{row['atividade']} ({row['status']})", expanded=True):
                         st.write(f"Local: {row['area']}")
-                        
                         sku_show = row['sku_produto'] if 'sku_produto' in row and pd.notna(row['sku_produto']) else "-"
                         st.write(f"📦 **Material:** {sku_show}")
                         st.write(f"Obs: {row['descricao']}")
@@ -441,6 +443,7 @@ def interface_colaborador():
                                 valor_base = row['valor']
                                 valor_final = 0.0
                                 
+                                # LOGICA DE INPUT INTELIGENTE POR TIPO DE ATIVIDADE
                                 if row['atividade'] in ['REPACK', 'Repack']:
                                     st.subheader("Produção Repack")
                                     c1,c2,c3,c4 = st.columns(4)
@@ -449,9 +452,22 @@ def interface_colaborador():
                                     ow = c3.number_input("OneWay", 0)
                                     ln = c4.number_input("LongNeck", 0)
                                     valor_final = (lata*PRECOS_REPACK['Lata']) + (pet*PRECOS_REPACK['PET']) + (ow*PRECOS_REPACK['OneWay']) + (ln*PRECOS_REPACK['LongNeck'])
+                                
+                                elif row['atividade'] in ATIVIDADES_POR_CARRO:
+                                    st.info(f"Valor por Carro: {format_currency(valor_base)}")
+                                    qtd_prod = st.number_input("Qtd Carros:", min_value=1.0, value=1.0, step=1.0)
+                                    valor_final = valor_base * qtd_prod
+                                
+                                elif row['atividade'] in ATIVIDADES_POR_DIA:
+                                    # MUDANÇA AQUI: Tira o input e fixa em 1
+                                    st.info(f"Valor da Diária: {format_currency(valor_base)}")
+                                    st.success("✅ Registrando 1 diária.")
+                                    qtd_prod = 1.0
+                                    valor_final = valor_base
+                                
                                 else:
-                                    st.info(f"Valor Base: {format_currency(valor_base)}")
-                                    qtd_prod = st.number_input("Qtd Realizada:", min_value=1.0, value=1.0, step=1.0)
+                                    st.info(f"Valor por Palete: {format_currency(valor_base)}")
+                                    qtd_prod = st.number_input("Qtd Paletes:", min_value=1.0, value=1.0, step=1.0)
                                     valor_final = valor_base * qtd_prod
                                 
                                 st.write(f"Total: {format_currency(valor_final)}")
@@ -463,7 +479,8 @@ def interface_colaborador():
                                     
                                     update_task_safe(row['id_task'], {
                                         'status': 'Aguardando Aprovação', 'tempo_total_min': st.session_state['fdur'],
-                                        'evidencia_img': pth, 'qtd_lata': lata, 'qtd_pet': pet, 'qtd_oneway': ow, 'qtd_longneck': ln, 'valor': valor_final
+                                        'evidencia_img': pth, 'qtd_lata': lata, 'qtd_pet': pet, 'qtd_oneway': ow, 'qtd_longneck': ln,
+                                        'qtd_produzida': qtd_prod, 'valor': valor_final
                                     })
                                     del st.session_state['fid']
                                     st.success("Enviado!")
@@ -477,10 +494,8 @@ def interface_colaborador():
     elif menu == "Auto-Cadastro":
         users = get_data("users")
         rules = get_data("rules")
-        
         st.title("🙋 Auto-Cadastro")
         
-        # BUSCA SKU TAMBÉM NO AUTO CADASTRO
         sku_resultado = buscar_sku_interface()
 
         confs = users[users['tipo'].str.lower().str.contains('conferente', na=False)]['nome'].tolist()
@@ -499,7 +514,7 @@ def interface_colaborador():
                 task = {
                     'id_task': int(time.time()), 'colaborador_id': my_id, 'conferente_id': str(cid),
                     'atividade': oq, 'area': loc, 'descricao': desc_final, 
-                    'sku_produto': sku_resultado, # Salva SKU
+                    'sku_produto': sku_resultado,
                     'prioridade': 'Média',
                     'status': 'Pendente', 'valor': float(val), 'data_criacao': datetime.now().strftime("%d/%m %H:%M"),
                     'inicio_execucao': "", 'fim_execucao': "", 'tempo_total_min': 0, 'obs_rejeicao': "",
