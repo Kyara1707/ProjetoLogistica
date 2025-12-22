@@ -38,6 +38,7 @@ st.markdown("""
 ATIVIDADES_POR_CARRO = ["AMARRAÇÃO", "DESCARREGAMENTO DE VAN"]
 ATIVIDADES_POR_DIA = ["MÁQUINA LIMPEZA", "5S MARIA MOLE", "5S PICKING/ABASTECIMENTO"]
 SUPERVISORES_PERMITIDOS = ['99849441', '99813623', '99797465']
+LIMITE_RV_OPERADOR = 380.00  # <--- NOVO LIMITE CONFIGURADO AQUI
 
 # Tabela de preços fixa para garantir funcionamento se CSV falhar
 NOVAS_REGRAS = [
@@ -382,7 +383,11 @@ def interface_operador():
         st.title("📊 Seu Desempenho")
         users = get_data("users")
         meu_saldo = users[users['id_login'].astype(str) == uid]['rv_acumulada'].values
-        saldo = float(meu_saldo[0]) if len(meu_saldo) > 0 else 0.0
+        saldo_real = float(meu_saldo[0]) if len(meu_saldo) > 0 else 0.0
+        
+        # --- LÓGICA DO TETO ---
+        saldo_exibido = min(saldo_real, LIMITE_RV_OPERADOR)
+        # ---------------------
         
         tasks = get_data("tasks")
         if not tasks.empty:
@@ -394,9 +399,12 @@ def interface_operador():
             total_tarefas, soma_kpis, soma_prod = 0, 0.0, 0.0
 
         c1, c2, c3 = st.columns(3)
-        c1.metric("💰 Saldo Total (RV)", format_currency(saldo))
+        c1.metric("💰 Saldo Total (RV)", format_currency(saldo_exibido))
         c2.metric("📦 Tarefas Executadas", total_tarefas)
         c3.metric("🎯 Ganho com KPIs", format_currency(soma_kpis))
+
+        if saldo_real > LIMITE_RV_OPERADOR:
+            st.warning(f"🔒 Teto de RV atingido! Seu acumulado real é {format_currency(saldo_real)}, mas o pagamento é limitado a {format_currency(LIMITE_RV_OPERADOR)}.")
 
         st.subheader("Histórico Recente")
         if not tasks.empty:
