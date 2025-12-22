@@ -1,9 +1,1 @@
-id_task;colaborador_id;conferente_id;atividade;area;descricao;prioridade;status;valor;data_criacao;inicio_execucao;fim_execucao;tempo_total_min;obs_rejeicao;qtd_lata;qtd_pet;qtd_oneway;qtd_longneck;evidencia_img
-1763766992;66617600;99707004;Repack;llm;Auto-Cadastro;Média;Executada;50.0;21/11 20:16;2025-11-21 20:16:40;;0.04;;0;0;0;0;images/1763766992_liapieq.png
-1763767168;66617600;99707004;Repack;kkk;Auto-Cadastro;Média;Executada;1.55;21/11 20:19;2025-11-21 20:26:34;;0.03;Refazer;8;5;0;0;images/1763767168_655ec333-b2d8-4436-a825-0b80750f6b10.jpg
-1763767771;66617600;99707004;Limpeza;KMKMK;Auto-Cadastro;Média;Executada;20.0;21/11 20:29;2025-11-21 20:30:11;;0.03;KMKM;0;0;0;0;images/1763767771_655ec333-b2d8-4436-a825-0b80750f6b10.jpg
-1763810629;71543642;99783154;5S MARIA MOLE;Maria mole;vidros no chão;Alta;Executada;14.5;22/11 08:23;2025-11-22 08:23:55;;0.24;;0;0;0;0;images/1763810629_liapieq.png
-1763810920;71543642;99783154;REPACK;OKO;OOKO;Média;Executada;113.6;22/11 08:28;2025-11-22 08:28:48;;0.03;;4;8;300;260;images/1763810920_655ec333-b2d8-4436-a825-0b80750f6b10.jpg
-1763811119;71543642;99783154;REPACK;ccc;ccc;Baixa;Executada;64.25;22/11 08:31;2025-11-22 08:32:12;;0.17;;20;15;100;200;images/1763811119_liapieq.png
-1763811852;66617600;99707004;SELO VERMELHO (T/M);mkmkm;mmkmkm;Média;Executada;1.25;22/11 08:44;2025-11-22 08:45:06;;0.11;;0;0;0;0;images/1763811852_image.jpg
-1763829638;66617600;99707004;REPACK;kmkmkm;kmkmk;Média;Executada;2.0500000000000003;22/11 13:40;2025-11-22 13:40:43;;0.13;;4;3;3;3;images/1763829638_Certificado .png
+
