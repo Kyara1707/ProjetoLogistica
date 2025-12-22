@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import os
-from datetime import datetime, date
+from datetime import datetime
 import time
 
 # --- LISTAS DE CATEGORIAS ---
@@ -27,20 +27,15 @@ PRECOS_REPACK = {
     'LongNeck': 0.20
 }
 
-# --- CONFIGURAÇÃO DOS KPIs DO OPERADOR ---
-VALORES_KPIS = {
-    "KPI - EFC (Eficiência Combustível)": 3.85,
-    "KPI - TMA (Tempo Médio)": 7.70,
-    "KPI - FEFO (Validade)": 3.85
-}
-
-# --- REGRAS OFICIAIS ---
+# --- REGRAS ATUALIZADAS (Conforme sua lista) ---
 NOVAS_REGRAS = [
     {"atividade": "SELO VERMELHO (T/M)", "valor": 1.25},
     {"atividade": "SELO VERMELHO (B/V)", "valor": 1.50},
     {"atividade": "AMARRAÇÃO", "valor": 3.00},
     {"atividade": "REFUGO", "valor": 0.90},
-    {"atividade": "BLITZ (EMPURRADA/CARREG/RETORNO)", "valor": 1.50},
+    {"atividade": "BLITZ (EMPURRADA)", "valor": 1.50},
+    {"atividade": "BLITZ (CARREG)", "valor": 1.50},
+    {"atividade": "BLITZ (RETORNO)", "valor": 1.50},
     {"atividade": "REPACK", "valor": 0.00},
     {"atividade": "DEVOLUÇÃO", "valor": 1.25},
     {"atividade": "TRANSBORDO", "valor": 1.50},
@@ -51,7 +46,11 @@ NOVAS_REGRAS = [
     {"atividade": "MÁQUINA LIMPEZA", "valor": 5.00},
     {"atividade": "5S MARIA MOLE", "valor": 14.50},
     {"atividade": "5S PICKING/ABASTECIMENTO", "valor": 14.50},
-    {"atividade": "DESCARREGAMENTO DE VAN", "valor": 2.00}
+    {"atividade": "DESCARREGAMENTO DE VAN", "valor": 2.00},
+    # --- NOVOS KPIS ---
+    {"atividade": "EFC", "valor": 3.85},
+    {"atividade": "TMA", "valor": 7.70},
+    {"atividade": "FEFO", "valor": 3.85}
 ]
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
@@ -95,6 +94,7 @@ def format_currency(value):
 
 # --- INIT DATA ---
 def init_data():
+    # Atualiza o arquivo rules.csv com a lista correta
     try:
         df_regras = pd.DataFrame(NOVAS_REGRAS)
         df_regras.to_csv(f"{FILES_PATH}/rules.csv", index=False, sep=';', encoding='latin1')
@@ -102,7 +102,7 @@ def init_data():
         pass 
 
     if not os.path.exists(f"{FILES_PATH}/users.csv"):
-        # Adicionei um exemplo de operador
+        # Cria users.csv se não existir
         pd.DataFrame(columns=['nome', 'id_login', 'tipo', 'rv_acumulada']).to_csv(f"{FILES_PATH}/users.csv", sep=';', index=False)
 
 init_data()
@@ -127,6 +127,9 @@ def get_data(filename):
         if filename == 'rules':
             if 'valor' in df.columns:
                 df['valor'] = pd.to_numeric(df['valor'], errors='coerce').fillna(0.0)
+            # Normalizar nomes das atividades para garantir match
+            if 'atividade' in df.columns:
+                df['atividade'] = df['atividade'].astype(str).str.strip()
 
         elif filename == 'users':
             if 'nome' not in df.columns:
@@ -226,7 +229,7 @@ def login_screen():
         if st.button("ENTRAR"):
             users = get_data("users")
             if users.empty: 
-                st.error("Erro users.csv")
+                st.error("Erro users.csv. Verifique se existe.")
                 return
             
             user = users[users['id_login'] == login_id]
@@ -234,13 +237,14 @@ def login_screen():
                 st.session_state['user_id'] = str(user.iloc[0]['id_login'])
                 st.session_state['user_name'] = user.iloc[0]['nome']
                 
-                tipo_user = str(user.iloc[0]['tipo']).lower()
+                # Normaliza o tipo para evitar erro de caixa alta/baixa
+                tipo_user = str(user.iloc[0]['tipo']).strip().upper()
 
                 if str(user.iloc[0]['id_login']) in SUPERVISORES_PERMITIDOS:
                     st.session_state['user_role'] = 'Supervisor'
-                elif 'operador' in tipo_user:
+                elif 'OPERADOR' in tipo_user:
                     st.session_state['user_role'] = 'Operador'
-                elif 'conferente' in tipo_user:
+                elif 'CONFERENTE' in tipo_user:
                     st.session_state['user_role'] = 'Conferente'
                 else:
                     st.session_state['user_role'] = 'Colaborador'
@@ -255,6 +259,7 @@ def interface_supervisor():
     st.sidebar.badge("Supervisor")
     menu = st.sidebar.radio("Menu", ["Validar KPIs", "Lançar Bônus", "Ranking", "Sair"])
     users = get_data("users")
+    rules = get_data("rules")
 
     if menu == "Sair":
         st.session_state.clear()
@@ -264,11 +269,12 @@ def interface_supervisor():
         st.title("🛡️ Validação de KPIs (Operadores)")
         tasks = get_data("tasks")
         
-        # Filtra tarefas de KPI que estão esperando validação
+        # Filtra tarefas de KPI (EFC, TMA, FEFO) que estão esperando validação
         if not tasks.empty:
+            kpi_names = ["EFC", "TMA", "FEFO"]
             kpi_tasks = tasks[
                 (tasks['status'] == 'Aguardando Validação') & 
-                (tasks['atividade'].str.contains("KPI -"))
+                (tasks['atividade'].isin(kpi_names))
             ]
 
             if kpi_tasks.empty:
@@ -292,7 +298,6 @@ def interface_supervisor():
                         col1.write(f"Valor: {format_currency(valor_declarado)}")
 
                         if col2.button("✅ Confirmar", key=f"kpi_ok_{row['id_task']}"):
-                            # Se confirmar, paga o valor que está lá
                             if update_rv_safe(row['colaborador_id'], valor_declarado):
                                 update_task_safe(row['id_task'], {'status': 'Executada'})
                                 st.success("Confirmado!")
@@ -300,15 +305,19 @@ def interface_supervisor():
                                 st.rerun()
 
                         if col3.button("✏️ Alterar/Corrigir", key=f"kpi_nok_{row['id_task']}"):
-                            # Se o supervisor discordar
+                            # Logica de inversão
                             if valor_declarado > 0:
                                 # Era OK, vira NOK (0 reais)
                                 update_task_safe(row['id_task'], {'status': 'Não Atingido', 'valor': 0.0, 'obs_rejeicao': 'Supervisor alterou para NOK'})
                                 st.warning("Alterado para NOK (R$ 0,00).")
                             else:
-                                # Era NOK, vira OK (valor cheio)
-                                # Precisamos achar o valor original do KPI pelo nome
-                                val_cheio = VALORES_KPIS.get(row['atividade'], 0.0)
+                                # Era NOK, vira OK. Busca valor na tabela de regras
+                                val_cheio = 0.0
+                                if not rules.empty:
+                                    try:
+                                        val_cheio = rules.loc[rules['atividade'] == row['atividade'], 'valor'].values[0]
+                                    except: pass
+                                
                                 if update_rv_safe(row['colaborador_id'], val_cheio):
                                     update_task_safe(row['id_task'], {'status': 'Executada', 'valor': val_cheio, 'obs_rejeicao': 'Supervisor alterou para OK'})
                                     st.success(f"Alterado para OK ({format_currency(val_cheio)}).")
@@ -319,8 +328,8 @@ def interface_supervisor():
         else:
             st.info("Sem dados.")
 
-
     elif menu == "Lançar Bônus":
+        # ... (Mantém igual)
         st.title("💰 Lançar Bônus / Extra")
         st.markdown("---")
         with st.form("bonus_form"):
@@ -351,6 +360,7 @@ def interface_supervisor():
 
 # --- CONFERENTE ---
 def interface_conferente():
+    # ... (Mantém a lógica do conferente original)
     st.sidebar.header(f"👤 {st.session_state['user_name']}")
     st.sidebar.badge("Conferente")
     menu = st.sidebar.radio("Menu", ["Criar Tarefa", "Aprovar Tarefas", "Sair"])
@@ -446,7 +456,7 @@ def interface_conferente():
                     st.divider()
         else: st.info("Sem tarefas.")
 
-# --- OPERADOR (NOVO PERFIL) ---
+# --- OPERADOR (PERFIL CORRIGIDO) ---
 def interface_operador():
     st.sidebar.header(f"👷 {st.session_state['user_name']}")
     st.sidebar.badge("Operador")
@@ -459,19 +469,34 @@ def interface_operador():
         
     elif menu == "KPIs Diários":
         st.title("🚀 Metas Diárias (KPIs)")
-        st.markdown("Valide suas metas do dia. O Supervisor irá confirmar.")
+        st.markdown("Valide suas metas do dia.")
         
-        # Verificar se já lançou hoje
+        # Buscar valores reais do CSV rules
+        rules = get_data("rules")
+        val_efc = 0.0
+        val_tma = 0.0
+        val_fefo = 0.0
+        
+        if not rules.empty:
+            try: val_efc = float(rules.loc[rules['atividade'] == 'EFC', 'valor'].values[0])
+            except: pass
+            try: val_tma = float(rules.loc[rules['atividade'] == 'TMA', 'valor'].values[0])
+            except: pass
+            try: val_fefo = float(rules.loc[rules['atividade'] == 'FEFO', 'valor'].values[0])
+            except: pass
+        
         tasks = get_data("tasks")
-        hoje_str = datetime.now().strftime("%d/%m") # Verifica pelo dia/mês atual na string
+        hoje_str = datetime.now().strftime("%d/%m")
         
         # Filtra tarefas deste usuário, com data de hoje e que sejam KPIs
         ja_lancou = False
+        kpi_names = ["EFC", "TMA", "FEFO"]
+        
         if not tasks.empty:
             kpis_hoje = tasks[
                 (tasks['colaborador_id'] == my_id) & 
                 (tasks['data_criacao'].str.contains(hoje_str)) &
-                (tasks['atividade'].str.contains("KPI -"))
+                (tasks['atividade'].isin(kpi_names))
             ]
             if not kpis_hoje.empty:
                 ja_lancou = True
@@ -480,24 +505,23 @@ def interface_operador():
         
         if not ja_lancou:
             with st.form("form_kpi"):
-                st.write("Marque 'OK' se a meta foi batida. Caso contrário, deixe desmarcado (NOK).")
+                st.write("Marque 'OK' se a meta foi batida.")
                 
-                check_efc = st.checkbox(f"EFC - Eficiência de Combustível ({format_currency(3.85)})")
-                check_tma = st.checkbox(f"TMA - Tempo Médio ({format_currency(7.70)})")
-                check_fefo = st.checkbox(f"FEFO - First Expired First Out ({format_currency(3.85)})")
+                check_efc = st.checkbox(f"EFC ({format_currency(val_efc)})")
+                check_tma = st.checkbox(f"TMA ({format_currency(val_tma)})")
+                check_fefo = st.checkbox(f"FEFO ({format_currency(val_fefo)})")
                 
                 if st.form_submit_button("ENVIAR KPIs"):
-                    # Cria 3 tarefas, uma para cada KPI
                     kpi_list = [
-                        ("KPI - EFC (Eficiência Combustível)", check_efc, 3.85),
-                        ("KPI - TMA (Tempo Médio)", check_tma, 7.70),
-                        ("KPI - FEFO (Validade)", check_fefo, 3.85)
+                        ("EFC", check_efc, val_efc),
+                        ("TMA", check_tma, val_tma),
+                        ("FEFO", check_fefo, val_fefo)
                     ]
                     
                     for nome_kpi, bateu_meta, valor_kpi in kpi_list:
                         val_final = valor_kpi if bateu_meta else 0.0
                         task = {
-                            'id_task': int(time.time()) + int(valor_kpi*100), # ID unico gambiarra
+                            'id_task': int(time.time()) + int(valor_kpi*100), 
                             'colaborador_id': my_id, 
                             'conferente_id': 'SISTEMA',
                             'atividade': nome_kpi, 
@@ -513,12 +537,11 @@ def interface_operador():
                             'qtd_lata': 0, 'qtd_pet': 0, 'qtd_oneway': 0, 'qtd_longneck': 0, 'evidencia_img': ""
                         }
                         add_task_safe(task)
-                        time.sleep(0.1) # evitar id duplicado
+                        time.sleep(0.1)
                         
                     st.success("KPIs enviados para o supervisor!")
                     st.rerun()
 
-    # REUTILIZA AS TELAS DO COLABORADOR COMUM
     elif menu == "Tarefas":
         interface_colaborador_tarefas(my_id)
     elif menu == "Auto-Cadastro":
@@ -526,8 +549,7 @@ def interface_operador():
     elif menu == "Dashboard":
         interface_colaborador_dash(my_id)
 
-# --- COLABORADOR COMUM ---
-# Separei as funções para reutilizar no Operador
+# --- REUTILIZAVEIS ---
 def interface_colaborador_dash(my_id):
     users = get_data("users")
     tasks = get_data("tasks")
@@ -553,8 +575,9 @@ def interface_colaborador_tarefas(my_id):
     t1, t2 = st.tabs(["A Fazer", "Feitas"])
     with t1:
         if not tasks.empty:
-            # Operador não vê os KPIs aqui como tarefa a fazer, pois já fez na aba KPIs
-            todo = tasks[(tasks['colaborador_id'] == my_id) & (tasks['status'].isin(['Pendente', 'Rejeitada', 'Em Execução'])) & (~tasks['atividade'].str.contains("KPI -"))]
+            # Filtra KPIs para nao aparecer aqui
+            kpis = ["EFC", "TMA", "FEFO"]
+            todo = tasks[(tasks['colaborador_id'] == my_id) & (tasks['status'].isin(['Pendente', 'Rejeitada', 'Em Execução'])) & (~tasks['atividade'].isin(kpis))]
             if todo.empty: st.info("Nada pendente.")
             for i, row in todo.iterrows():
                 with st.expander(f"{row['atividade']} ({row['status']})", expanded=True):
