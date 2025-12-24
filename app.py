@@ -35,8 +35,8 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 # --- CONFIGURAÇÕES GLOBAIS ---
-ATIVIDADES_POR_CARRO = ["AMARRAÇÃO", "DESCARREGAMENTO DE VAN"] # Corrigido acentuação
-ATIVIDADES_POR_DIA = ["MÁQUINA LIMPEZA", "5S MARIA MOLE", "5S PICKING/ABASTECIMENTO"] # Corrigido acentuação
+ATIVIDADES_POR_CARRO = ["AMARRAÇÃO", "DESCARREGAMENTO DE VAN"]
+ATIVIDADES_POR_DIA = ["MÁQUINA LIMPEZA", "5S MARIA MOLE", "5S PICKING/ABASTECIMENTO"]
 SUPERVISORES_PERMITIDOS = ['99849441', '99813623', '99797465']
 LIMITE_RV_OPERADOR = 380.00  
 
@@ -74,19 +74,15 @@ def format_currency(value):
     try: return f"R$ {float(value):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
     except: return "R$ 0,00"
 
-# --- GERENCIAMENTO DE DADOS (CORRIGIDO ENCODING) ---
+# --- GERENCIAMENTO DE DADOS ---
 def init_data():
-    # Garante que rules existe
     if not os.path.exists(f"{FILES_PATH}/rules.csv"):
         df_regras = pd.DataFrame(NOVAS_REGRAS)
-        # MUDANÇA: encoding='utf-8-sig' para aceitar acentos
         df_regras.to_csv(f"{FILES_PATH}/rules.csv", index=False, sep=';', encoding='utf-8-sig')
     
-    # Garante que users existe
     if not os.path.exists(f"{FILES_PATH}/users.csv"):
         pd.DataFrame(columns=['nome', 'id_login', 'tipo', 'rv_acumulada']).to_csv(f"{FILES_PATH}/users.csv", sep=';', index=False, encoding='utf-8-sig')
     
-    # Garante que tasks existe
     if not os.path.exists(f"{FILES_PATH}/tasks.csv"):
         cols = ['id_task', 'colaborador_id', 'conferente_id', 'atividade', 'area', 'descricao', 
                 'sku_produto', 'prioridade', 'status', 'valor', 'data_criacao', 'inicio_execucao', 
@@ -102,11 +98,9 @@ def get_data(filename):
         init_data()
         
     try:
-        # MUDANÇA: encoding='utf-8-sig' na leitura também
         try:
             df = pd.read_csv(path, sep=';', encoding='utf-8-sig', dtype=str)
         except UnicodeDecodeError:
-            # Fallback caso o arquivo antigo esteja em latin1
             df = pd.read_csv(path, sep=';', encoding='latin1', dtype=str)
         
         if filename == 'tasks':
@@ -135,7 +129,6 @@ def get_data(filename):
         return pd.DataFrame()
 
 def save_data(df, filename):
-    # MUDANÇA: encoding='utf-8-sig' ao salvar
     try: df.to_csv(f"{FILES_PATH}/{filename}.csv", index=False, sep=';', encoding='utf-8-sig')
     except: st.error(f"Erro ao salvar. Feche o arquivo {filename}.csv se estiver aberto!")
 
@@ -201,7 +194,7 @@ def login_screen():
                 if st.session_state['user_id'] in SUPERVISORES_PERMITIDOS: st.session_state['role'] = 'Supervisor'
                 elif 'OPERADOR' in tipo: st.session_state['role'] = 'Operador'
                 elif 'CONFERENTE' in tipo: st.session_state['role'] = 'Conferente'
-                else: st.session_state['role'] = 'Colaborador' # Aqui pega o AJUDANTE
+                else: st.session_state['role'] = 'Colaborador' # Ajudantes caem aqui
                 st.rerun()
             else: st.error("Usuário não cadastrado.")
 
@@ -250,7 +243,7 @@ def interface_supervisor():
                             novo_valor = 0.0
                             obs = "Supervisor alterou para NOK"
                             
-                            if val == 0: # Era NOK, virou OK
+                            if val == 0: 
                                 try: novo_valor = float(rules.loc[rules['atividade'] == row['atividade'], 'valor'].values[0])
                                 except: novo_valor = 0.0
                                 obs = "Supervisor alterou para OK"
@@ -262,7 +255,6 @@ def interface_supervisor():
 
     elif menu == "Ajustes Financeiros":
         st.title("💰 Ajuste de Saldo (Crédito/Débito)")
-        st.info("Utilize para pagar bônus ou realizar descontos manuais.")
         
         with st.form("ajuste_form"):
             ops = users['nome'].tolist()
@@ -310,9 +302,15 @@ def interface_supervisor():
         st.table(df_rank)
 
 def interface_operador():
-    # Tela serve para Operador e Ajudante/Colaborador
     st.sidebar.header(f"👷 {st.session_state['user_name']}")
-    menu = st.sidebar.radio("Menu", ["🚀 KPIs Diários", "Tarefas", "Auto-Cadastro", "Dashboard", "Sair"])
+    
+    # --- LÓGICA DO MENU PARA AJUDANTE VS OPERADOR ---
+    opcoes_menu = ["Tarefas", "Auto-Cadastro", "Dashboard", "Sair"]
+    # Se for Operador (Empilhadeirista), adiciona KPIs. Se for Colaborador (Ajudante), não adiciona.
+    if st.session_state['role'] == 'Operador':
+        opcoes_menu.insert(0, "🚀 KPIs Diários")
+        
+    menu = st.sidebar.radio("Menu", opcoes_menu)
     uid = st.session_state['user_id']
     
     if menu == "Sair": 
@@ -398,7 +396,10 @@ def interface_operador():
         c1, c2, c3 = st.columns(3)
         c1.metric("💰 Saldo Total (RV)", format_currency(saldo_exibido))
         c2.metric("📦 Tarefas Executadas", total_tarefas)
-        c3.metric("🎯 Ganho com KPIs", format_currency(soma_kpis))
+        
+        # Ocultar o card de KPIs se for Ajudante, pois é sempre zero e confunde
+        if st.session_state['role'] == 'Operador':
+            c3.metric("🎯 Ganho com KPIs", format_currency(soma_kpis))
 
         if saldo_real > LIMITE_RV_OPERADOR:
             st.warning(f"🔒 Teto de RV atingido! Seu acumulado real é {format_currency(saldo_real)}, mas o pagamento é limitado a {format_currency(LIMITE_RV_OPERADOR)}.")
@@ -630,5 +631,5 @@ else:
     if r == 'Supervisor': interface_supervisor()
     elif r == 'Operador': interface_operador()
     elif r == 'Conferente': interface_conferente()
-    elif r == 'Colaborador': interface_operador() # Correção: Ajudante usa tela de Operador
+    elif r == 'Colaborador': interface_operador() # AJUDANTE VAI PRA CÁ, MAS SEM OS MENUS DE KPI
     else: st.warning(f"Perfil não identificado: {r}")
