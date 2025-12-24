@@ -35,12 +35,12 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 # --- CONFIGURAÇÕES GLOBAIS ---
-ATIVIDADES_POR_CARRO = ["AMARRAÇAO", "DESCARREGAMENTO DE VAN"]
-ATIVIDADES_POR_DIA = ["MaQUINA LIMPEZA", "5S MARIA MOLE", "5S PICKING/ABASTECIMENTO"]
+ATIVIDADES_POR_CARRO = ["AMARRAÇÃO", "DESCARREGAMENTO DE VAN"] # Corrigido acentuação
+ATIVIDADES_POR_DIA = ["MÁQUINA LIMPEZA", "5S MARIA MOLE", "5S PICKING/ABASTECIMENTO"] # Corrigido acentuação
 SUPERVISORES_PERMITIDOS = ['99849441', '99813623', '99797465']
-LIMITE_RV_OPERADOR = 380.00  # <--- NOVO LIMITE CONFIGURADO AQUI
+LIMITE_RV_OPERADOR = 380.00  
 
-# Tabela de preços fixa para garantir funcionamento se CSV falhar
+# Tabela de preços fixa
 NOVAS_REGRAS = [
     {"atividade": "SELO VERMELHO (T/M)", "valor": 1.25},
     {"atividade": "SELO VERMELHO (B/V)", "valor": 1.50},
@@ -74,16 +74,17 @@ def format_currency(value):
     try: return f"R$ {float(value):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
     except: return "R$ 0,00"
 
-# --- GERENCIAMENTO DE DADOS (CORRIGIDO PARA EVITAR KEYERROR) ---
+# --- GERENCIAMENTO DE DADOS (CORRIGIDO ENCODING) ---
 def init_data():
     # Garante que rules existe
     if not os.path.exists(f"{FILES_PATH}/rules.csv"):
         df_regras = pd.DataFrame(NOVAS_REGRAS)
-        df_regras.to_csv(f"{FILES_PATH}/rules.csv", index=False, sep=';', encoding='latin1')
+        # MUDANÇA: encoding='utf-8-sig' para aceitar acentos
+        df_regras.to_csv(f"{FILES_PATH}/rules.csv", index=False, sep=';', encoding='utf-8-sig')
     
     # Garante que users existe
     if not os.path.exists(f"{FILES_PATH}/users.csv"):
-        pd.DataFrame(columns=['nome', 'id_login', 'tipo', 'rv_acumulada']).to_csv(f"{FILES_PATH}/users.csv", sep=';', index=False)
+        pd.DataFrame(columns=['nome', 'id_login', 'tipo', 'rv_acumulada']).to_csv(f"{FILES_PATH}/users.csv", sep=';', index=False, encoding='utf-8-sig')
     
     # Garante que tasks existe
     if not os.path.exists(f"{FILES_PATH}/tasks.csv"):
@@ -91,19 +92,23 @@ def init_data():
                 'sku_produto', 'prioridade', 'status', 'valor', 'data_criacao', 'inicio_execucao', 
                 'fim_execucao', 'tempo_total_min', 'obs_rejeicao', 'qtd_lata', 'qtd_pet', 
                 'qtd_oneway', 'qtd_longneck', 'qtd_produzida', 'evidencia_img']
-        pd.DataFrame(columns=cols).to_csv(f"{FILES_PATH}/tasks.csv", sep=';', index=False)
+        pd.DataFrame(columns=cols).to_csv(f"{FILES_PATH}/tasks.csv", sep=';', index=False, encoding='utf-8-sig')
 
 init_data()
 
 def get_data(filename):
     path = f"{FILES_PATH}/{filename}.csv"
     if not os.path.exists(path):
-        init_data() # Tenta recriar se não existir
+        init_data()
         
     try:
-        df = pd.read_csv(path, sep=';', encoding='latin1', dtype=str)
+        # MUDANÇA: encoding='utf-8-sig' na leitura também
+        try:
+            df = pd.read_csv(path, sep=';', encoding='utf-8-sig', dtype=str)
+        except UnicodeDecodeError:
+            # Fallback caso o arquivo antigo esteja em latin1
+            df = pd.read_csv(path, sep=';', encoding='latin1', dtype=str)
         
-        # CORREÇÃO CRÍTICA: Se o arquivo existir mas estiver vazio ou sem colunas
         if filename == 'tasks':
             required_cols = ['id_task', 'colaborador_id', 'status', 'valor', 'atividade']
             if df.empty or not all(col in df.columns for col in required_cols):
@@ -113,7 +118,6 @@ def get_data(filename):
                         'qtd_oneway', 'qtd_longneck', 'qtd_produzida', 'evidencia_img']
                  return pd.DataFrame(columns=cols)
             
-            # Conversão de tipos para evitar erros matemáticos
             df['valor'] = pd.to_numeric(df['valor'], errors='coerce').fillna(0.0)
             df['tempo_total_min'] = pd.to_numeric(df['tempo_total_min'], errors='coerce').fillna(0.0)
             
@@ -131,7 +135,8 @@ def get_data(filename):
         return pd.DataFrame()
 
 def save_data(df, filename):
-    try: df.to_csv(f"{FILES_PATH}/{filename}.csv", index=False, sep=';', encoding='latin1')
+    # MUDANÇA: encoding='utf-8-sig' ao salvar
+    try: df.to_csv(f"{FILES_PATH}/{filename}.csv", index=False, sep=';', encoding='utf-8-sig')
     except: st.error(f"Erro ao salvar. Feche o arquivo {filename}.csv se estiver aberto!")
 
 def add_task_safe(task_dict):
@@ -143,7 +148,6 @@ def add_task_safe(task_dict):
 def update_task_safe(task_id, updates):
     df = get_data("tasks")
     if df.empty: return
-    # Garante comparação string x string
     idx = df[df['id_task'].astype(str) == str(task_id)].index
     if not idx.empty:
         for col, val in updates.items():
@@ -152,7 +156,6 @@ def update_task_safe(task_id, updates):
 
 def update_rv_safe(user_id, amount):
     df = get_data("users")
-    # Limpa espaços em branco nos IDs
     idx = df[df['id_login'].astype(str).str.strip() == str(user_id).strip()].index
     if not idx.empty:
         atual = float(df.at[idx[0], 'rv_acumulada'])
@@ -162,14 +165,13 @@ def update_rv_safe(user_id, amount):
     return False
 
 def buscar_sku_interface():
-    df_sku = get_data("sku") # Requer arquivo sku.csv na pasta data se quiser usar
+    df_sku = get_data("sku")
     codigo = st.text_input("Digite o Código do Produto:")
     nome = "-"
     if codigo and not df_sku.empty:
         try:
-            # Tenta encontrar código na coluna (ajuste o nome da coluna conforme seu CSV)
-            col_cod = df_sku.columns[0] # Assume primeira coluna como código
-            col_nome = df_sku.columns[1] # Assume segunda como nome
+            col_cod = df_sku.columns[0]
+            col_nome = df_sku.columns[1]
             res = df_sku[df_sku[col_cod].astype(str).str.strip() == codigo.strip()]
             if not res.empty: nome = res.iloc[0][col_nome]
             else: nome = "❌ Não encontrado"
@@ -199,7 +201,7 @@ def login_screen():
                 if st.session_state['user_id'] in SUPERVISORES_PERMITIDOS: st.session_state['role'] = 'Supervisor'
                 elif 'OPERADOR' in tipo: st.session_state['role'] = 'Operador'
                 elif 'CONFERENTE' in tipo: st.session_state['role'] = 'Conferente'
-                else: st.session_state['role'] = 'Colaborador'
+                else: st.session_state['role'] = 'Colaborador' # Aqui pega o AJUDANTE
                 st.rerun()
             else: st.error("Usuário não cadastrado.")
 
@@ -225,7 +227,6 @@ def interface_supervisor():
             if pendentes.empty: st.info("Tudo validado!")
             else:
                 for i, row in pendentes.iterrows():
-                    # Chaves ÚNICAS para evitar DuplicateWidgetID
                     k_ok = f"btn_ok_{row['id_task']}_{i}"
                     k_nok = f"btn_nok_{row['id_task']}_{i}"
                     
@@ -309,6 +310,7 @@ def interface_supervisor():
         st.table(df_rank)
 
 def interface_operador():
+    # Tela serve para Operador e Ajudante/Colaborador
     st.sidebar.header(f"👷 {st.session_state['user_name']}")
     menu = st.sidebar.radio("Menu", ["🚀 KPIs Diários", "Tarefas", "Auto-Cadastro", "Dashboard", "Sair"])
     uid = st.session_state['user_id']
@@ -321,7 +323,6 @@ def interface_operador():
         st.title("🚀 Metas do Dia")
         rules = get_data("rules")
         
-        # Recupera valores das regras
         def get_val(name):
             try: return float(rules[rules['atividade']==name]['valor'].values[0])
             except: return 0.0
@@ -333,7 +334,6 @@ def interface_operador():
         hoje = datetime.now().strftime("%d/%m")
         tasks = get_data("tasks")
         
-        # Verifica se já enviou hoje
         ja_fez = False
         if not tasks.empty:
             tasks['colaborador_id'] = tasks['colaborador_id'].astype(str)
@@ -385,18 +385,15 @@ def interface_operador():
         meu_saldo = users[users['id_login'].astype(str) == uid]['rv_acumulada'].values
         saldo_real = float(meu_saldo[0]) if len(meu_saldo) > 0 else 0.0
         
-        # --- LÓGICA DO TETO ---
         saldo_exibido = min(saldo_real, LIMITE_RV_OPERADOR)
-        # ---------------------
         
         tasks = get_data("tasks")
         if not tasks.empty:
             minhas = tasks[(tasks['colaborador_id'].astype(str) == uid) & (tasks['status'] == 'Executada')]
             total_tarefas = len(minhas)
             soma_kpis = minhas[minhas['atividade'].isin(['EFC', 'TMA', 'FEFO'])]['valor'].sum()
-            soma_prod = minhas[~minhas['atividade'].isin(['EFC', 'TMA', 'FEFO'])]['valor'].sum()
         else:
-            total_tarefas, soma_kpis, soma_prod = 0, 0.0, 0.0
+            total_tarefas, soma_kpis = 0, 0.0
 
         c1, c2, c3 = st.columns(3)
         c1.metric("💰 Saldo Total (RV)", format_currency(saldo_exibido))
@@ -469,9 +466,7 @@ def interface_conferente():
             if pends.empty: st.info("Nenhuma tarefa pendente.")
             
             for i, row in pends.iterrows():
-                # CHAVES ÚNICAS
                 k_approve = f"ok_{row['id_task']}_{i}"
-                k_reject_exp = f"rej_exp_{row['id_task']}_{i}"
                 k_reject_btn = f"rej_btn_{row['id_task']}_{i}"
                 k_reason = f"reason_{row['id_task']}_{i}"
                 
@@ -524,7 +519,6 @@ def interface_colaborador_tarefas(uid):
         st.info("Nenhuma tarefa encontrada.")
         return
 
-    # Filtro Seguro
     tasks['colaborador_id'] = tasks['colaborador_id'].astype(str)
     mask_pend = (tasks['colaborador_id'] == str(uid)) & \
                 (tasks['status'].isin(['Pendente', 'Em Execução', 'Rejeitada'])) & \
@@ -553,7 +547,6 @@ def interface_colaborador_tarefas(uid):
                     st.session_state['f_id'] = row['id_task']
                     st.rerun()
 
-            # Formulário de Finalização
             if st.session_state.get('f_id') == row['id_task']:
                 st.markdown("---")
                 st.write("📝 Detalhes da Execução")
@@ -637,4 +630,5 @@ else:
     if r == 'Supervisor': interface_supervisor()
     elif r == 'Operador': interface_operador()
     elif r == 'Conferente': interface_conferente()
-    else: st.warning("Perfil não identificado")
+    elif r == 'Colaborador': interface_operador() # Correção: Ajudante usa tela de Operador
+    else: st.warning(f"Perfil não identificado: {r}")
