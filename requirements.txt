@@ -1,3 +1,2 @@
 streamlit
 pandas
-pip install gspread oauth2client pandas streamlit
