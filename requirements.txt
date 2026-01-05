@@ -1,3 +1,5 @@
 streamlit
 pandas
 PyGithub
+gspread
+oauth2client
