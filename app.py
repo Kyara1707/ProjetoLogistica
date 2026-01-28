@@ -455,25 +455,25 @@ def interface_conferente():
     elif menu == "Criar Tarefa":
         st.title("📋 Nova Atividade")
 
+        # --- CORREÇÃO: SELEÇÃO FORA DO FORMULÁRIO PARA ATUALIZAÇÃO IMEDIATA ---
+        ops = users[~users['tipo'].str.lower().str.contains('conferente', na=False)]['nome'].tolist()
+        atvs = rules['atividade'].tolist() if not rules.empty else []
+        
+        colab = st.selectbox("Colaborador", ops)
+        atv = st.selectbox("Atividade", atvs)
+        
+        # Lógica de SKU Dinâmica
+        sku_resultado = "-"
+        if atv and (("REPACK" in atv) or ("SELO VERMELHO" in atv)):
+            st.info("SKU não obrigatório para esta atividade.")
+            sku_resultado = "N/A"
+        else:
+            st.markdown("---")
+            sku_resultado = buscar_sku_interface_v2()
+            st.markdown("---")
+
+        # --- FORMULÁRIO PARA O RESTANTE DOS DADOS ---
         with st.form("task_form"):
-            ops = users[~users['tipo'].str.lower().str.contains('conferente', na=False)]['nome'].tolist()
-            atvs = rules['atividade'].tolist() if not rules.empty else []
-            
-            colab = st.selectbox("Colaborador", ops)
-            atv = st.selectbox("Atividade", atvs)
-            
-            # --- LÓGICA CORRIGIDA (POSITIVA) ---
-            sku_resultado = "-"
-            # Se for Repack ou Selo (qualquer variação), mostra mensagem e trava SKU
-            if atv and (("REPACK" in atv) or ("SELO VERMELHO" in atv)):
-                st.info("SKU não obrigatório para esta atividade.")
-                sku_resultado = "N/A"
-            else:
-                # Para todo o resto (TMA, EFC, etc), exige busca de SKU
-                st.markdown("---")
-                sku_resultado = buscar_sku_interface_v2()
-                st.markdown("---")
-            
             area = st.text_input("Local")
             obs = st.text_area("Obs")
             prio = st.select_slider("Prioridade", ["Baixa", "Média", "Alta"])
@@ -651,7 +651,7 @@ def interface_colaborador_tarefas(uid):
                             
                             with open(pth, "wb") as f: f.write(foto.getbuffer())
                             
-                            # --- CORREÇÃO DO CÁLCULO DE TEMPO ---
+                            # --- CÁLCULO DE TEMPO ---
                             tempo_total = 0
                             try:
                                 fmt = "%Y-%m-%d %H:%M"
@@ -685,21 +685,23 @@ def interface_colaborador_auto(uid):
     users = get_data("users")
     confs = users[users['tipo'].str.contains('CONFERENTE', case=False, na=False)]['nome'].tolist()
     
-    with st.form("auto_c"):
-        conf = st.selectbox("Quem aprova?", confs)
-        atv = st.selectbox("Atividade", rules['atividade'].tolist())
-        loc = st.text_input("Local")
+    # --- CORREÇÃO: SELEÇÃO FORA DO FORMULÁRIO ---
+    conf = st.selectbox("Quem aprova?", confs)
+    atv = st.selectbox("Atividade", rules['atividade'].tolist())
+
+    # Lógica de SKU Dinâmica
+    sku_resultado = "-"
+    if atv and (("REPACK" in atv) or ("SELO VERMELHO" in atv)):
+        st.info("SKU não obrigatório para esta atividade.")
+        sku_resultado = "N/A"
+    else:
+        st.markdown("---")
+        sku_resultado = buscar_sku_interface_v2()
+        st.markdown("---")
         
-        # --- LÓGICA CORRIGIDA (POSITIVA) PARA AUTO-CADASTRO ---
-        sku_resultado = "-"
-        if atv and (("REPACK" in atv) or ("SELO VERMELHO" in atv)):
-            st.info("SKU não obrigatório para esta atividade.")
-            sku_resultado = "N/A"
-        else:
-            st.markdown("---")
-            sku_resultado = buscar_sku_interface_v2()
-            st.markdown("---")
-            
+    # --- FORMULÁRIO PARA O RESTANTE ---
+    with st.form("auto_c"):
+        loc = st.text_input("Local")
         obs = st.text_area("Obs")
         foto_init = st.file_uploader("Foto Inicial (Opcional)")
         
