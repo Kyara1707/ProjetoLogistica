@@ -455,14 +455,14 @@ def interface_conferente():
     elif menu == "Criar Tarefa":
         st.title("📋 Nova Atividade")
 
-        # --- CORREÇÃO: SELEÇÃO FORA DO FORMULÁRIO PARA ATUALIZAÇÃO IMEDIATA ---
+        # --- SELEÇÃO FORA DO FORMULÁRIO (PARA ATUALIZAÇÃO IMEDIATA) ---
         ops = users[~users['tipo'].str.lower().str.contains('conferente', na=False)]['nome'].tolist()
         atvs = rules['atividade'].tolist() if not rules.empty else []
         
         colab = st.selectbox("Colaborador", ops)
         atv = st.selectbox("Atividade", atvs)
         
-        # Lógica de SKU Dinâmica
+        # --- LÓGICA DE SKU DINÂMICA ---
         sku_resultado = "-"
         if atv and (("REPACK" in atv) or ("SELO VERMELHO" in atv)):
             st.info("SKU não obrigatório para esta atividade.")
@@ -472,7 +472,7 @@ def interface_conferente():
             sku_resultado = buscar_sku_interface_v2()
             st.markdown("---")
 
-        # --- FORMULÁRIO PARA O RESTANTE DOS DADOS ---
+        # --- FORMULÁRIO PARA DADOS RESTANTES ---
         with st.form("task_form"):
             area = st.text_input("Local")
             obs = st.text_area("Obs")
@@ -493,7 +493,7 @@ def interface_conferente():
                     task_id_new = str(uuid.uuid4())
                     
                     if foto_upload:
-                        ext = foto_upload.name.split('.')[-1]
+                        ext = foto_upload.name.split('.')[-1].lower() # Garante extensão em minúsculo
                         path_evidencia = f"{IMGS_PATH}/{task_id_new}_INICIAL.{ext}"
                         with open(path_evidencia, "wb") as f:
                             f.write(foto_upload.getbuffer())
@@ -545,10 +545,18 @@ def interface_conferente():
                     
                     c1.metric("A Pagar", format_currency(row['valor']))
                     
+                    # --- CORREÇÃO: EXIBIÇÃO DE VÍDEO OU FOTO ---
                     if pd.notna(row['evidencia_img']) and row['evidencia_img']:
                         if os.path.exists(row['evidencia_img']):
-                            try: c2.image(row['evidencia_img'], width=150, caption="Evidência")
-                            except: pass
+                            ext = row['evidencia_img'].split('.')[-1].lower()
+                            if ext in ['mp4', 'avi', 'mov', 'mkv']:
+                                c2.video(row['evidencia_img'])
+                            else:
+                                try: c2.image(row['evidencia_img'], width=200, caption="Evidência")
+                                except: c2.error("Erro ao carregar imagem")
+                        else:
+                            c2.warning("Arquivo não encontrado.")
+                    # -------------------------------------------
                     
                     b1, b2 = st.columns(2)
                     if b1.button("✅ Aprovar", key=k_approve):
@@ -594,9 +602,14 @@ def interface_colaborador_tarefas(uid):
             st.write(f"**Material:** {row['sku_produto']}")
             st.write(f"**Obs:** {row['descricao']}")
             
-            # Se houver foto inicial colocada pelo conferente, mostra aqui
+            # Se houver foto inicial (Conferente), mostra aqui
             if pd.notna(row['evidencia_img']) and row['evidencia_img'] and os.path.exists(row['evidencia_img']):
-                 st.image(row['evidencia_img'], width=100, caption="Ref. Inicial")
+                 # Verifica se é vídeo ou foto também aqui
+                 ext = row['evidencia_img'].split('.')[-1].lower()
+                 if ext in ['mp4', 'avi', 'mov', 'mkv']:
+                     st.video(row['evidencia_img'])
+                 else:
+                     st.image(row['evidencia_img'], width=100, caption="Ref. Inicial")
 
             if row['status'] == 'Rejeitada': st.error(f"Motivo: {row['obs_rejeicao']}")
             
@@ -644,7 +657,7 @@ def interface_colaborador_tarefas(uid):
                             nome_safe = st.session_state['user_name'].replace(" ", "_")
                             atv_safe = row['atividade'].replace(" ", "_").replace("/", "-")
                             data_safe = datetime.now().strftime("%Y%m%d_%H%M%S")
-                            ext = foto.name.split('.')[-1]
+                            ext = foto.name.split('.')[-1].lower()
                             
                             filename = f"{nome_safe}_{atv_safe}_{data_safe}.{ext}"
                             pth = f"{IMGS_PATH}/{filename}"
@@ -685,7 +698,7 @@ def interface_colaborador_auto(uid):
     users = get_data("users")
     confs = users[users['tipo'].str.contains('CONFERENTE', case=False, na=False)]['nome'].tolist()
     
-    # --- CORREÇÃO: SELEÇÃO FORA DO FORMULÁRIO ---
+    # --- SELEÇÃO FORA DO FORMULÁRIO (CORREÇÃO SKU) ---
     conf = st.selectbox("Quem aprova?", confs)
     atv = st.selectbox("Atividade", rules['atividade'].tolist())
 
@@ -721,7 +734,7 @@ def interface_colaborador_auto(uid):
                 task_id = str(uuid.uuid4())
                 
                 if foto_init:
-                    ext = foto_init.name.split('.')[-1]
+                    ext = foto_init.name.split('.')[-1].lower()
                     path_init = f"{IMGS_PATH}/{task_id}_INICIAL.{ext}"
                     with open(path_init, "wb") as f:
                         f.write(foto_init.getbuffer())
