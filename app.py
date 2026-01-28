@@ -159,7 +159,7 @@ def update_rv_safe(user_id, amount):
         return True
     return False
 
-# --- ALTERAÇÃO 4: BUSCA DE SKU MELHORADA ---
+# --- FUNÇÃO DE BUSCA DE SKU ---
 def buscar_sku_interface_v2():
     df_sku = get_data("sku")
     
@@ -459,24 +459,25 @@ def interface_conferente():
             ops = users[~users['tipo'].str.lower().str.contains('conferente', na=False)]['nome'].tolist()
             atvs = rules['atividade'].tolist() if not rules.empty else []
             
-            # Seleção de atividade primeiro para definir se mostra SKU
             colab = st.selectbox("Colaborador", ops)
             atv = st.selectbox("Atividade", atvs)
             
-            # --- ALTERAÇÃO 3: TIRAR SKU SE FOR REPACK OU SELO ---
+            # --- LÓGICA CORRIGIDA (POSITIVA) ---
             sku_resultado = "-"
-            if atv and ("REPACK" not in atv) and ("SELO VERMELHO" not in atv):
-                st.markdown("---")
-                sku_resultado = buscar_sku_interface_v2() # Usando a busca melhorada
-                st.markdown("---")
-            else:
+            # Se for Repack ou Selo (qualquer variação), mostra mensagem e trava SKU
+            if atv and (("REPACK" in atv) or ("SELO VERMELHO" in atv)):
                 st.info("SKU não obrigatório para esta atividade.")
+                sku_resultado = "N/A"
+            else:
+                # Para todo o resto (TMA, EFC, etc), exige busca de SKU
+                st.markdown("---")
+                sku_resultado = buscar_sku_interface_v2()
+                st.markdown("---")
             
             area = st.text_input("Local")
             obs = st.text_area("Obs")
             prio = st.select_slider("Prioridade", ["Baixa", "Média", "Alta"])
 
-            # --- ALTERAÇÃO 1: UPLOAD DE FOTO/VIDEO NA CRIAÇÃO ---
             st.markdown("### 📷 Evidência Inicial (Opcional)")
             foto_upload = st.file_uploader("Carregar Foto ou Vídeo", type=['png', 'jpg', 'jpeg', 'mp4', 'avi'])
             
@@ -488,13 +489,11 @@ def interface_conferente():
                         val_lookup = rules.loc[rules['atividade'] == atv, 'valor']
                         if not val_lookup.empty: val = val_lookup.values[0]
 
-                    # Processar upload se existir
                     path_evidencia = ""
                     task_id_new = str(uuid.uuid4())
                     
                     if foto_upload:
                         ext = foto_upload.name.split('.')[-1]
-                        # Salvar como ID_TAREFA_INICIAL.ext
                         path_evidencia = f"{IMGS_PATH}/{task_id_new}_INICIAL.{ext}"
                         with open(path_evidencia, "wb") as f:
                             f.write(foto_upload.getbuffer())
@@ -634,7 +633,7 @@ def interface_colaborador_tarefas(uid):
                     
                     st.write(f"**Valor Final:** {format_currency(val_calc)}")
                     
-                    # --- ALTERAÇÃO 5: FOTO OBRIGATÓRIA ---
+                    # --- FOTO OBRIGATÓRIA ---
                     st.markdown("**📸 Foto Obrigatória para concluir**")
                     foto = st.file_uploader("Foto Evidência Final")
                     
@@ -642,8 +641,6 @@ def interface_colaborador_tarefas(uid):
                         if not foto:
                             st.error("⚠️ Você precisa anexar uma foto para finalizar!")
                         else:
-                            # --- ALTERAÇÃO 5: NOME DESCRITIVO DA FOTO ---
-                            # nome_colaborador_atividade_data
                             nome_safe = st.session_state['user_name'].replace(" ", "_")
                             atv_safe = row['atividade'].replace(" ", "_").replace("/", "-")
                             data_safe = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -654,7 +651,7 @@ def interface_colaborador_tarefas(uid):
                             
                             with open(pth, "wb") as f: f.write(foto.getbuffer())
                             
-                            # --- ALTERAÇÃO 2: CORREÇÃO DO CÁLCULO DE TEMPO ---
+                            # --- CORREÇÃO DO CÁLCULO DE TEMPO ---
                             tempo_total = 0
                             try:
                                 fmt = "%Y-%m-%d %H:%M"
@@ -662,11 +659,11 @@ def interface_colaborador_tarefas(uid):
                                     start_time = datetime.strptime(row['inicio_execucao'], fmt)
                                     end_time = datetime.now()
                                     diff = end_time - start_time
-                                    tempo_total = round(diff.total_seconds() / 60) # Converte segundos para minutos
+                                    tempo_total = round(diff.total_seconds() / 60)
                                 else:
-                                    tempo_total = 1 # Se perdeu o tempo inicial, assume 1 min
+                                    tempo_total = 1 
                             except:
-                                tempo_total = 10 # Fallback se der erro
+                                tempo_total = 10 
                             
                             update_task_safe(row['id_task'], {
                                 'status': 'Aguardando Aprovação',
@@ -693,28 +690,56 @@ def interface_colaborador_auto(uid):
         atv = st.selectbox("Atividade", rules['atividade'].tolist())
         loc = st.text_input("Local")
         
-        # --- ALTERAÇÃO 3 (APLICADA TAMBÉM NO AUTO-CADASTRO) ---
-        sku = "-"
-        if atv and ("REPACK" not in atv) and ("SELO VERMELHO" not in atv):
-             sku = buscar_sku_interface_v2()
+        # --- LÓGICA CORRIGIDA (POSITIVA) PARA AUTO-CADASTRO ---
+        sku_resultado = "-"
+        if atv and (("REPACK" in atv) or ("SELO VERMELHO" in atv)):
+            st.info("SKU não obrigatório para esta atividade.")
+            sku_resultado = "N/A"
+        else:
+            st.markdown("---")
+            sku_resultado = buscar_sku_interface_v2()
+            st.markdown("---")
+            
+        obs = st.text_area("Obs")
+        foto_init = st.file_uploader("Foto Inicial (Opcional)")
         
-        if st.form_submit_button("CADASTRAR"):
+        if st.form_submit_button("CRIAR TAREFA"):
             if conf and atv:
-                cid = users[users['nome']==conf].iloc[0]['id_login']
-                val = rules.loc[rules['atividade']==atv, 'valor'].values[0]
+                try:
+                    conf_id = users[users['nome'] == conf].iloc[0]['id_login']
+                except:
+                    st.error("Conferente inválido")
+                    return
+
+                val = 0.0
+                val_lookup = rules.loc[rules['atividade'] == atv, 'valor']
+                if not val_lookup.empty: val = val_lookup.values[0]
+
+                path_init = ""
+                task_id = str(uuid.uuid4())
+                
+                if foto_init:
+                    ext = foto_init.name.split('.')[-1]
+                    path_init = f"{IMGS_PATH}/{task_id}_INICIAL.{ext}"
+                    with open(path_init, "wb") as f:
+                        f.write(foto_init.getbuffer())
+
                 task = {
-                    'id_task': str(uuid.uuid4()),
-                    'colaborador_id': uid, 'conferente_id': str(cid),
-                    'atividade': atv, 'area': loc, 'descricao': 'Auto-lancamento',
-                    'sku_produto': sku, 'prioridade': 'Média', 'status': 'Pendente',
+                    'id_task': task_id,
+                    'colaborador_id': str(uid),
+                    'conferente_id': str(conf_id),
+                    'atividade': atv, 'area': loc, 'descricao': obs,
+                    'sku_produto': sku_resultado, 'prioridade': 'Média', 'status': 'Pendente',
                     'valor': float(val), 'data_criacao': datetime.now().strftime("%d/%m %H:%M"),
-                    'inicio_execucao': "-", 'fim_execucao': "-", 'tempo_total_min': 0, 'obs_rejeicao': "", 
-                    'qtd_lata': 0, 'qtd_pet': 0, 'qtd_oneway': 0, 'qtd_longneck': 0, 
-                    'qtd_produzida': 0, 'evidencia_img': ""
+                    'inicio_execucao': None, 'fim_execucao': None,
+                    'tempo_total_min': 0, 'obs_rejeicao': '',
+                    'qtd_lata': 0, 'qtd_pet': 0, 'qtd_oneway': 0, 'qtd_longneck': 0,
+                    'qtd_produzida': 0, 'evidencia_img': path_init
                 }
                 add_task_safe(task)
-                st.success("Criado!")
-            else: st.error("Preencha tudo")
+                st.success("Auto-cadastro realizado!")
+            else:
+                st.error("Preencha os campos obrigatórios.")
 
 # --- ROTEAMENTO ---
 if 'user_id' not in st.session_state:
