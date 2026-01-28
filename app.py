@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 import time
 import uuid
 
@@ -73,6 +73,10 @@ os.makedirs(IMGS_PATH, exist_ok=True)
 def format_currency(value):
     try: return f"R$ {float(value):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
     except: return "R$ 0,00"
+
+def get_time_br():
+    # Ajuste simples para horário Brasil (UTC-3)
+    return datetime.now() - timedelta(hours=3)
 
 # --- GERENCIAMENTO DE DADOS ---
 def init_data():
@@ -167,7 +171,6 @@ def buscar_sku_interface_v2():
         st.warning("Base de SKUs vazia.")
         return "-"
 
-    # Cria uma lista combinada para pesquisa
     df_sku['display'] = df_sku.iloc[:, 1].astype(str) + " | Cód: " + df_sku.iloc[:, 0].astype(str)
     opcoes = df_sku['display'].tolist()
     
@@ -178,7 +181,6 @@ def buscar_sku_interface_v2():
     nome_produto = "-"
     
     if escolha:
-        # Extrai o código da string selecionada (assumindo formato "Nome | Cód: 12345")
         try:
             parts = escolha.split(" | Cód: ")
             nome_produto = parts[0]
@@ -186,7 +188,6 @@ def buscar_sku_interface_v2():
         except:
             codigo_travado = "Erro"
             
-    # Mostra o código travado em baixo
     st.text_input("Código do SKU (Travado)", value=codigo_travado, disabled=True)
     
     if codigo_travado and codigo_travado != "Erro":
@@ -305,7 +306,7 @@ def interface_supervisor():
                             'prioridade': 'Alta',
                             'status': 'Executada',
                             'valor': float(valor_final),
-                            'data_criacao': datetime.now().strftime("%d/%m %H:%M"),
+                            'data_criacao': get_time_br().strftime("%d/%m %H:%M"),
                             'inicio_execucao': "-", 'fim_execucao': "-", 
                             'tempo_total_min': 0, 'obs_rejeicao': "", 
                             'qtd_lata': 0, 'qtd_pet': 0, 'qtd_oneway': 0, 'qtd_longneck': 0, 
@@ -357,7 +358,7 @@ def interface_operador():
         v_tma = get_val('TMA')
         v_fefo = get_val('FEFO')
         
-        hoje = datetime.now().strftime("%d/%m")
+        hoje = get_time_br().strftime("%d/%m")
         tasks = get_data("tasks")
         
         ja_fez = False
@@ -388,7 +389,7 @@ def interface_operador():
                             'sku_produto': '-', 'prioridade': 'Alta',
                             'status': 'Aguardando Validação',
                             'valor': float(vf),
-                            'data_criacao': datetime.now().strftime("%d/%m %H:%M"),
+                            'data_criacao': get_time_br().strftime("%d/%m %H:%M"),
                             'inicio_execucao': "-", 'fim_execucao': "-", 
                             'tempo_total_min': 0, 'obs_rejeicao': "", 
                             'qtd_lata': 0, 'qtd_pet': 0, 'qtd_oneway': 0, 'qtd_longneck': 0, 
@@ -455,24 +456,21 @@ def interface_conferente():
     elif menu == "Criar Tarefa":
         st.title("📋 Nova Atividade")
 
-        # --- SELEÇÃO FORA DO FORMULÁRIO (PARA ATUALIZAÇÃO IMEDIATA) ---
         ops = users[~users['tipo'].str.lower().str.contains('conferente', na=False)]['nome'].tolist()
         atvs = rules['atividade'].tolist() if not rules.empty else []
         
         colab = st.selectbox("Colaborador", ops)
         atv = st.selectbox("Atividade", atvs)
         
-        # --- LÓGICA DE SKU DINÂMICA ---
         sku_resultado = "-"
-        if atv and (("REPACK" in atv) or ("SELO VERMELHO" in atv)):
-            st.info("SKU não obrigatório para esta atividade.")
-            sku_resultado = "N/A"
-        else:
+        if atv and ("REPACK" not in atv) and ("SELO VERMELHO" not in atv):
             st.markdown("---")
             sku_resultado = buscar_sku_interface_v2()
             st.markdown("---")
+        else:
+            st.info("SKU não obrigatório para esta atividade.")
+            sku_resultado = "N/A"
 
-        # --- FORMULÁRIO PARA DADOS RESTANTES ---
         with st.form("task_form"):
             area = st.text_input("Local")
             obs = st.text_area("Obs")
@@ -493,7 +491,7 @@ def interface_conferente():
                     task_id_new = str(uuid.uuid4())
                     
                     if foto_upload:
-                        ext = foto_upload.name.split('.')[-1].lower() # Garante extensão em minúsculo
+                        ext = foto_upload.name.split('.')[-1].lower()
                         path_evidencia = f"{IMGS_PATH}/{task_id_new}_INICIAL.{ext}"
                         with open(path_evidencia, "wb") as f:
                             f.write(foto_upload.getbuffer())
@@ -504,7 +502,7 @@ def interface_conferente():
                         'conferente_id': st.session_state['user_id'],
                         'atividade': atv, 'area': area, 'descricao': obs, 
                         'sku_produto': sku_resultado, 'prioridade': prio, 'status': 'Pendente',
-                        'valor': float(val), 'data_criacao': datetime.now().strftime("%d/%m %H:%M"),
+                        'valor': float(val), 'data_criacao': get_time_br().strftime("%d/%m %H:%M"),
                         'inicio_execucao': None, 'fim_execucao': None, 
                         'tempo_total_min': 0, 'obs_rejeicao': '',
                         'qtd_lata': 0, 'qtd_pet': 0, 'qtd_oneway': 0, 'qtd_longneck': 0, 
@@ -545,7 +543,6 @@ def interface_conferente():
                     
                     c1.metric("A Pagar", format_currency(row['valor']))
                     
-                    # --- CORREÇÃO: EXIBIÇÃO DE VÍDEO OU FOTO ---
                     if pd.notna(row['evidencia_img']) and row['evidencia_img']:
                         if os.path.exists(row['evidencia_img']):
                             ext = row['evidencia_img'].split('.')[-1].lower()
@@ -555,8 +552,7 @@ def interface_conferente():
                                 try: c2.image(row['evidencia_img'], width=200, caption="Evidência")
                                 except: c2.error("Erro ao carregar imagem")
                         else:
-                            c2.warning("Arquivo não encontrado.")
-                    # -------------------------------------------
+                            c2.warning("Arquivo não encontrado no servidor.")
                     
                     b1, b2 = st.columns(2)
                     if b1.button("✅ Aprovar", key=k_approve):
@@ -602,9 +598,8 @@ def interface_colaborador_tarefas(uid):
             st.write(f"**Material:** {row['sku_produto']}")
             st.write(f"**Obs:** {row['descricao']}")
             
-            # Se houver foto inicial (Conferente), mostra aqui
+            # Se houver foto/vídeo inicial (Conferente), mostra aqui
             if pd.notna(row['evidencia_img']) and row['evidencia_img'] and os.path.exists(row['evidencia_img']):
-                 # Verifica se é vídeo ou foto também aqui
                  ext = row['evidencia_img'].split('.')[-1].lower()
                  if ext in ['mp4', 'avi', 'mov', 'mkv']:
                      st.video(row['evidencia_img'])
@@ -615,7 +610,9 @@ def interface_colaborador_tarefas(uid):
             
             if row['status'] != 'Em Execução':
                 if st.button("▶️ INICIAR", key=k_init):
-                    update_task_safe(row['id_task'], {'status': 'Em Execução', 'inicio_execucao': datetime.now().strftime("%Y-%m-%d %H:%M")})
+                    # Salva horário Brasil
+                    now_br = get_time_br().strftime("%Y-%m-%d %H:%M")
+                    update_task_safe(row['id_task'], {'status': 'Em Execução', 'inicio_execucao': now_br})
                     st.rerun()
             else:
                 if st.button("⏹️ FINALIZAR", key=k_end):
@@ -625,7 +622,25 @@ def interface_colaborador_tarefas(uid):
             if st.session_state.get('f_id') == row['id_task']:
                 st.markdown("---")
                 st.write("📝 Detalhes da Execução")
+                
+                # --- CÁLCULO DE TEMPO AUTOMÁTICO PRÉVIO ---
+                tempo_estimado = 1
+                try:
+                    fmt = "%Y-%m-%d %H:%M"
+                    if row['inicio_execucao'] and row['inicio_execucao'] != "-":
+                        start_time = datetime.strptime(row['inicio_execucao'], fmt)
+                        end_time = get_time_br()
+                        diff = end_time - start_time
+                        tempo_estimado = round(diff.total_seconds() / 60)
+                except:
+                    tempo_estimado = 1
+                
+                if tempo_estimado < 1: tempo_estimado = 1
+
                 with st.form(f"form_fim_{row['id_task']}"):
+                    # Permite editar o tempo caso o colaborador tenha esquecido de dar Start
+                    tempo_real = st.number_input("Tempo Total (minutos)", min_value=1, value=int(tempo_estimado), step=1)
+                    
                     qtd = 1.0
                     val_calc = float(row['valor'])
                     lata, pet, ow, ln = 0,0,0,0
@@ -646,7 +661,6 @@ def interface_colaborador_tarefas(uid):
                     
                     st.write(f"**Valor Final:** {format_currency(val_calc)}")
                     
-                    # --- FOTO OBRIGATÓRIA ---
                     st.markdown("**📸 Foto Obrigatória para concluir**")
                     foto = st.file_uploader("Foto Evidência Final")
                     
@@ -664,28 +678,14 @@ def interface_colaborador_tarefas(uid):
                             
                             with open(pth, "wb") as f: f.write(foto.getbuffer())
                             
-                            # --- CÁLCULO DE TEMPO ---
-                            tempo_total = 0
-                            try:
-                                fmt = "%Y-%m-%d %H:%M"
-                                if row['inicio_execucao'] and row['inicio_execucao'] != "-":
-                                    start_time = datetime.strptime(row['inicio_execucao'], fmt)
-                                    end_time = datetime.now()
-                                    diff = end_time - start_time
-                                    tempo_total = round(diff.total_seconds() / 60)
-                                else:
-                                    tempo_total = 1 
-                            except:
-                                tempo_total = 10 
-                            
                             update_task_safe(row['id_task'], {
                                 'status': 'Aguardando Aprovação',
                                 'qtd_produzida': qtd,
                                 'valor': val_calc,
                                 'evidencia_img': pth,
                                 'qtd_lata': lata, 'qtd_pet': pet, 'qtd_oneway': ow, 'qtd_longneck': ln,
-                                'fim_execucao': datetime.now().strftime("%Y-%m-%d %H:%M"),
-                                'tempo_total_min': tempo_total 
+                                'fim_execucao': get_time_br().strftime("%Y-%m-%d %H:%M"),
+                                'tempo_total_min': tempo_real # Usa o tempo que o colaborador confirmou/corrigiu
                             })
                             if 'f_id' in st.session_state: del st.session_state['f_id']
                             st.success("Tarefa entregue!")
@@ -698,30 +698,29 @@ def interface_colaborador_auto(uid):
     users = get_data("users")
     confs = users[users['tipo'].str.contains('CONFERENTE', case=False, na=False)]['nome'].tolist()
     
-    # --- SELEÇÃO FORA DO FORMULÁRIO (CORREÇÃO SKU) ---
-    conf = st.selectbox("Quem aprova?", confs)
+    ops = users[~users['tipo'].str.lower().str.contains('conferente', na=False)]['nome'].tolist()
+    
+    colab_sel = st.selectbox("Quem aprova?", confs)
     atv = st.selectbox("Atividade", rules['atividade'].tolist())
 
-    # Lógica de SKU Dinâmica
     sku_resultado = "-"
-    if atv and (("REPACK" in atv) or ("SELO VERMELHO" in atv)):
-        st.info("SKU não obrigatório para esta atividade.")
-        sku_resultado = "N/A"
-    else:
+    if atv and ("REPACK" not in atv) and ("SELO VERMELHO" not in atv):
         st.markdown("---")
         sku_resultado = buscar_sku_interface_v2()
         st.markdown("---")
+    else:
+        st.info("SKU não obrigatório.")
+        sku_resultado = "N/A"
         
-    # --- FORMULÁRIO PARA O RESTANTE ---
     with st.form("auto_c"):
         loc = st.text_input("Local")
         obs = st.text_area("Obs")
         foto_init = st.file_uploader("Foto Inicial (Opcional)")
         
         if st.form_submit_button("CRIAR TAREFA"):
-            if conf and atv:
+            if colab_sel and atv:
                 try:
-                    conf_id = users[users['nome'] == conf].iloc[0]['id_login']
+                    conf_id = users[users['nome'] == colab_sel].iloc[0]['id_login']
                 except:
                     st.error("Conferente inválido")
                     return
@@ -745,7 +744,7 @@ def interface_colaborador_auto(uid):
                     'conferente_id': str(conf_id),
                     'atividade': atv, 'area': loc, 'descricao': obs,
                     'sku_produto': sku_resultado, 'prioridade': 'Média', 'status': 'Pendente',
-                    'valor': float(val), 'data_criacao': datetime.now().strftime("%d/%m %H:%M"),
+                    'valor': float(val), 'data_criacao': get_time_br().strftime("%d/%m %H:%M"),
                     'inicio_execucao': None, 'fim_execucao': None,
                     'tempo_total_min': 0, 'obs_rejeicao': '',
                     'qtd_lata': 0, 'qtd_pet': 0, 'qtd_oneway': 0, 'qtd_longneck': 0,
