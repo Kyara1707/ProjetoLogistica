@@ -656,7 +656,7 @@ def interface_colaborador_tarefas(uid):
                         qtd = st.number_input("Qtd Carros", 1.0)
                         val_calc = float(row['valor']) * qtd
                     elif row['atividade'] not in ATIVIDADES_POR_DIA:
-                        qtd = st.number_input("Qtd Paletes/Unid", 1.0)
+                        qtd = st.number_input("Qtd Paletes", 1.0)
                         val_calc = float(row['valor']) * qtd
                     
                     st.write(f"**Valor Final:** {format_currency(val_calc)}")
