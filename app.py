@@ -37,7 +37,7 @@ st.markdown("""
 # --- CONFIGURAÇÕES GLOBAIS ---
 ATIVIDADES_POR_CARRO = ["AMARRAÇÃO", "DESCARREGAMENTO DE VAN"]
 ATIVIDADES_POR_DIA = ["MÁQUINA LIMPEZA", "5S MARIA MOLE", "5S PICKING/ABASTECIMENTO"]
-SUPERVISORES_PERMITIDOS = ['99849441', '99813623', '99797465', '99835447']
+SUPERVISORES_PERMITIDOS = ['99849441', '99813623', '99797465']
 LIMITE_RV_OPERADOR = 380.00  
 
 # Tabela de preços fixa
@@ -194,6 +194,12 @@ def buscar_sku_interface_v2():
         return f"{codigo_travado} - {nome_produto}"
     return "-"
 
+# --- LOGOUT E LIMPEZA DE SESSÃO ---
+def do_logout():
+    st.query_params.clear() # Limpa a URL
+    st.session_state.clear()
+    st.rerun()
+
 # --- TELAS DO SISTEMA ---
 def login_screen():
     st.markdown("<h1 style='text-align: center; color: #0054a6;'>ProTrack Logística 🚛</h1>", unsafe_allow_html=True)
@@ -209,28 +215,39 @@ def login_screen():
 
             user = users[users['id_login'].astype(str) == lid]
             if not user.empty:
-                st.session_state['user_id'] = str(user.iloc[0]['id_login'])
-                st.session_state['user_name'] = user.iloc[0]['nome']
-                tipo = str(user.iloc[0]['tipo']).upper()
-                
-                if st.session_state['user_id'] in SUPERVISORES_PERMITIDOS: 
-                    st.session_state['role'] = 'Supervisor'
-                elif 'OPERADOR' in tipo: 
-                    st.session_state['role'] = 'Operador'
-                elif 'CONFERENTE' in tipo: 
-                    st.session_state['role'] = 'Conferente'
-                else: 
-                    st.session_state['role'] = 'Colaborador' 
+                # Salva na URL para persistência
+                st.query_params['uid'] = str(user.iloc[0]['id_login'])
                 st.rerun()
             else: st.error("Usuário não cadastrado.")
+
+def restore_session():
+    # Tenta restaurar a sessão pelos parâmetros da URL
+    qp = st.query_params
+    if 'uid' in qp:
+        uid = qp['uid']
+        users = get_data("users")
+        user = users[users['id_login'].astype(str) == uid]
+        if not user.empty:
+            st.session_state['user_id'] = str(user.iloc[0]['id_login'])
+            st.session_state['user_name'] = user.iloc[0]['nome']
+            tipo = str(user.iloc[0]['tipo']).upper()
+            
+            if st.session_state['user_id'] in SUPERVISORES_PERMITIDOS: 
+                st.session_state['role'] = 'Supervisor'
+            elif 'OPERADOR' in tipo: 
+                st.session_state['role'] = 'Operador'
+            elif 'CONFERENTE' in tipo: 
+                st.session_state['role'] = 'Conferente'
+            else: 
+                st.session_state['role'] = 'Colaborador'
+            return True
+    return False
 
 def interface_supervisor():
     st.sidebar.header(f"👮 {st.session_state.get('user_name', 'Sup')}")
     menu = st.sidebar.radio("Menu", ["Validar KPIs", "Ajustes Financeiros", "Ranking", "Sair"])
     
-    if menu == "Sair": 
-        st.session_state.clear()
-        st.rerun()
+    if menu == "Sair": do_logout()
     
     users = get_data("users")
     rules = get_data("rules")
@@ -329,8 +346,7 @@ def interface_supervisor():
 
 def interface_operador():
     if 'role' not in st.session_state or 'user_id' not in st.session_state:
-        st.session_state.clear()
-        st.rerun()
+        do_logout()
 
     st.sidebar.header(f"👷 {st.session_state['user_name']}")
     
@@ -342,9 +358,7 @@ def interface_operador():
     menu = st.sidebar.radio("Menu", opcoes_menu)
     uid = st.session_state['user_id']
     
-    if menu == "Sair": 
-        st.session_state.clear()
-        st.rerun()
+    if menu == "Sair": do_logout()
 
     if menu == "🚀 KPIs Diários" and st.session_state.get('role') == 'Operador':
         st.title("🚀 Metas do Dia")
@@ -449,9 +463,7 @@ def interface_conferente():
     tasks = get_data("tasks")
     rules = get_data("rules")
 
-    if menu == "Sair":
-        st.session_state.clear()
-        st.rerun()
+    if menu == "Sair": do_logout()
 
     elif menu == "Criar Tarefa":
         st.title("📋 Nova Atividade")
@@ -598,7 +610,7 @@ def interface_colaborador_tarefas(uid):
             st.write(f"**Material:** {row['sku_produto']}")
             st.write(f"**Obs:** {row['descricao']}")
             
-            # Se houver foto/vídeo inicial (Conferente), mostra aqui
+            # Se houver foto/vídeo inicial (Conferente)
             if pd.notna(row['evidencia_img']) and row['evidencia_img'] and os.path.exists(row['evidencia_img']):
                  ext = row['evidencia_img'].split('.')[-1].lower()
                  if ext in ['mp4', 'avi', 'mov', 'mkv']:
@@ -608,11 +620,16 @@ def interface_colaborador_tarefas(uid):
 
             if row['status'] == 'Rejeitada': st.error(f"Motivo: {row['obs_rejeicao']}")
             
+            # --- LÓGICA DE CRONÔMETRO PRECISO ---
+            # Formato com segundos para cálculo preciso
+            fmt_completo = "%Y-%m-%d %H:%M:%S"
+            fmt_exibicao = "%Y-%m-%d %H:%M"
+
             if row['status'] != 'Em Execução':
                 if st.button("▶️ INICIAR", key=k_init):
-                    # Salva horário Brasil
-                    now_br = get_time_br().strftime("%Y-%m-%d %H:%M")
-                    update_task_safe(row['id_task'], {'status': 'Em Execução', 'inicio_execucao': now_br})
+                    # Salva com segundos
+                    now_str = get_time_br().strftime(fmt_completo)
+                    update_task_safe(row['id_task'], {'status': 'Em Execução', 'inicio_execucao': now_str})
                     st.rerun()
             else:
                 if st.button("⏹️ FINALIZAR", key=k_end):
@@ -623,24 +640,31 @@ def interface_colaborador_tarefas(uid):
                 st.markdown("---")
                 st.write("📝 Detalhes da Execução")
                 
-                # --- CÁLCULO DE TEMPO AUTOMÁTICO PRÉVIO ---
-                tempo_estimado = 1
+                # --- CÁLCULO DE TEMPO AUTOMÁTICO E TRAVADO ---
+                tempo_final = 1
                 try:
-                    fmt = "%Y-%m-%d %H:%M"
                     if row['inicio_execucao'] and row['inicio_execucao'] != "-":
-                        start_time = datetime.strptime(row['inicio_execucao'], fmt)
+                        try:
+                            # Tenta ler formato com segundos
+                            start_time = datetime.strptime(row['inicio_execucao'], fmt_completo)
+                        except ValueError:
+                            # Fallback para legado (sem segundos)
+                            start_time = datetime.strptime(row['inicio_execucao'], fmt_exibicao)
+                            
                         end_time = get_time_br()
                         diff = end_time - start_time
-                        tempo_estimado = round(diff.total_seconds() / 60)
-                except:
-                    tempo_estimado = 1
+                        
+                        # Cálculo preciso de minutos
+                        tempo_final = int(diff.total_seconds() / 60)
+                except Exception as e:
+                    tempo_final = 1
                 
-                if tempo_estimado < 1: tempo_estimado = 1
+                if tempo_final < 1: tempo_final = 1
+                
+                # Mostra o tempo, mas não permite editar
+                st.info(f"⏱️ Tempo total calculado: **{tempo_final} minutos**")
 
                 with st.form(f"form_fim_{row['id_task']}"):
-                    # Permite editar o tempo caso o colaborador tenha esquecido de dar Start
-                    tempo_real = st.number_input("Tempo Total (minutos)", min_value=1, value=int(tempo_estimado), step=1)
-                    
                     qtd = 1.0
                     val_calc = float(row['valor'])
                     lata, pet, ow, ln = 0,0,0,0
@@ -656,7 +680,7 @@ def interface_colaborador_tarefas(uid):
                         qtd = st.number_input("Qtd Carros", 1.0)
                         val_calc = float(row['valor']) * qtd
                     elif row['atividade'] not in ATIVIDADES_POR_DIA:
-                        qtd = st.number_input("Qtd Paletes", 1.0)
+                        qtd = st.number_input("Qtd Paletes/Unid", 1.0)
                         val_calc = float(row['valor']) * qtd
                     
                     st.write(f"**Valor Final:** {format_currency(val_calc)}")
@@ -684,8 +708,8 @@ def interface_colaborador_tarefas(uid):
                                 'valor': val_calc,
                                 'evidencia_img': pth,
                                 'qtd_lata': lata, 'qtd_pet': pet, 'qtd_oneway': ow, 'qtd_longneck': ln,
-                                'fim_execucao': get_time_br().strftime("%Y-%m-%d %H:%M"),
-                                'tempo_total_min': tempo_real # Usa o tempo que o colaborador confirmou/corrigiu
+                                'fim_execucao': get_time_br().strftime(fmt_exibicao),
+                                'tempo_total_min': tempo_final # Usa o tempo calculado
                             })
                             if 'f_id' in st.session_state: del st.session_state['f_id']
                             st.success("Tarefa entregue!")
@@ -755,10 +779,15 @@ def interface_colaborador_auto(uid):
             else:
                 st.error("Preencha os campos obrigatórios.")
 
-# --- ROTEAMENTO ---
+# --- ROTEAMENTO E PERSISTÊNCIA ---
+# Tenta restaurar sessão se não estiver logado
 if 'user_id' not in st.session_state:
-    login_screen()
+    if not restore_session():
+        login_screen()
+    else:
+        st.rerun()
 else:
+    # Se já estiver logado (na sessão ou via URL restaurada)
     r = st.session_state.get('role', 'Colaborador')
     
     if r == 'Supervisor': interface_supervisor()
@@ -766,5 +795,4 @@ else:
     elif r == 'Conferente': interface_conferente()
     elif r == 'Colaborador': interface_operador()
     else: 
-        st.session_state.clear()
-        st.rerun()
+        do_logout()
