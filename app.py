@@ -30,6 +30,10 @@ st.markdown("""
         text-align: center;
         box-shadow: 2px 2px 5px rgba(0,0,0,0.05);
     }
+    /* Esconde o botão de fechar fullscreen das imagens para evitar toques acidentais */
+    button[title="View fullscreen"] {
+        display: none;
+    }
     h1, h2, h3 { color: #0054a6; }
     </style>
     """, unsafe_allow_html=True)
@@ -75,8 +79,8 @@ def format_currency(value):
     except: return "R$ 0,00"
 
 def get_time_br():
-    # Ajuste simples para horário Brasil (UTC-3)
-    return datetime.now() - timedelta(hours=3)
+    # Garante o horário correto subtraindo 3h do UTC do servidor
+    return datetime.utcnow() - timedelta(hours=3)
 
 # --- GERENCIAMENTO DE DADOS ---
 def init_data():
@@ -163,7 +167,6 @@ def update_rv_safe(user_id, amount):
         return True
     return False
 
-# --- FUNÇÃO DE BUSCA DE SKU ---
 def buscar_sku_interface_v2():
     df_sku = get_data("sku")
     
@@ -194,34 +197,14 @@ def buscar_sku_interface_v2():
         return f"{codigo_travado} - {nome_produto}"
     return "-"
 
-# --- LOGOUT E LIMPEZA DE SESSÃO ---
+# --- GESTÃO DE SESSÃO E LOGIN ---
 def do_logout():
-    st.query_params.clear() # Limpa a URL
+    st.query_params.clear()
     st.session_state.clear()
     st.rerun()
 
-# --- TELAS DO SISTEMA ---
-def login_screen():
-    st.markdown("<h1 style='text-align: center; color: #0054a6;'>ProTrack Logística 🚛</h1>", unsafe_allow_html=True)
-    col1, col2, col3 = st.columns([1,2,1])
-    with col2:
-        st.info("Insira seu ID ou Matrícula")
-        lid = st.text_input("ID").strip()
-        if st.button("ENTRAR"):
-            users = get_data("users")
-            if users.empty:
-                st.error("Arquivo de usuários vazio ou não encontrado.")
-                return
-
-            user = users[users['id_login'].astype(str) == lid]
-            if not user.empty:
-                # Salva na URL para persistência
-                st.query_params['uid'] = str(user.iloc[0]['id_login'])
-                st.rerun()
-            else: st.error("Usuário não cadastrado.")
-
 def restore_session():
-    # Tenta restaurar a sessão pelos parâmetros da URL
+    """Restaura a sessão baseado no ID salvo na URL"""
     qp = st.query_params
     if 'uid' in qp:
         uid = qp['uid']
@@ -242,6 +225,27 @@ def restore_session():
                 st.session_state['role'] = 'Colaborador'
             return True
     return False
+
+# --- TELAS DO SISTEMA ---
+def login_screen():
+    st.markdown("<h1 style='text-align: center; color: #0054a6;'>ProTrack Logística 🚛</h1>", unsafe_allow_html=True)
+    col1, col2, col3 = st.columns([1,2,1])
+    with col2:
+        st.info("Insira seu ID ou Matrícula")
+        lid = st.text_input("ID").strip()
+        if st.button("ENTRAR"):
+            users = get_data("users")
+            if users.empty:
+                st.error("Arquivo de usuários vazio ou não encontrado.")
+                return
+
+            user = users[users['id_login'].astype(str) == lid]
+            if not user.empty:
+                # SALVA LOGIN NA URL (PERSISTENCIA)
+                st.query_params["uid"] = str(user.iloc[0]['id_login'])
+                time.sleep(0.1)
+                st.rerun()
+            else: st.error("Usuário não cadastrado.")
 
 def interface_supervisor():
     st.sidebar.header(f"👮 {st.session_state.get('user_name', 'Sup')}")
@@ -345,6 +349,7 @@ def interface_supervisor():
         st.table(df_rank)
 
 def interface_operador():
+    # Verifica sessão a cada carregamento
     if 'role' not in st.session_state or 'user_id' not in st.session_state:
         do_logout()
 
@@ -610,7 +615,6 @@ def interface_colaborador_tarefas(uid):
             st.write(f"**Material:** {row['sku_produto']}")
             st.write(f"**Obs:** {row['descricao']}")
             
-            # Se houver foto/vídeo inicial (Conferente)
             if pd.notna(row['evidencia_img']) and row['evidencia_img'] and os.path.exists(row['evidencia_img']):
                  ext = row['evidencia_img'].split('.')[-1].lower()
                  if ext in ['mp4', 'avi', 'mov', 'mkv']:
@@ -620,14 +624,12 @@ def interface_colaborador_tarefas(uid):
 
             if row['status'] == 'Rejeitada': st.error(f"Motivo: {row['obs_rejeicao']}")
             
-            # --- LÓGICA DE CRONÔMETRO PRECISO ---
-            # Formato com segundos para cálculo preciso
+            # --- CRONÔMETRO DE ALTA PRECISÃO ---
+            # Salva formato completo com segundos
             fmt_completo = "%Y-%m-%d %H:%M:%S"
-            fmt_exibicao = "%Y-%m-%d %H:%M"
 
             if row['status'] != 'Em Execução':
                 if st.button("▶️ INICIAR", key=k_init):
-                    # Salva com segundos
                     now_str = get_time_br().strftime(fmt_completo)
                     update_task_safe(row['id_task'], {'status': 'Em Execução', 'inicio_execucao': now_str})
                     st.rerun()
@@ -640,29 +642,25 @@ def interface_colaborador_tarefas(uid):
                 st.markdown("---")
                 st.write("📝 Detalhes da Execução")
                 
-                # --- CÁLCULO DE TEMPO AUTOMÁTICO E TRAVADO ---
+                # --- CÁLCULO DE TEMPO ROBUSTO (PANDAS) ---
                 tempo_final = 1
                 try:
                     if row['inicio_execucao'] and row['inicio_execucao'] != "-":
-                        try:
-                            # Tenta ler formato com segundos
-                            start_time = datetime.strptime(row['inicio_execucao'], fmt_completo)
-                        except ValueError:
-                            # Fallback para legado (sem segundos)
-                            start_time = datetime.strptime(row['inicio_execucao'], fmt_exibicao)
-                            
-                        end_time = get_time_br()
-                        diff = end_time - start_time
+                        # Usa pandas para converter, pois é mais flexível com formatos
+                        start_time = pd.to_datetime(row['inicio_execucao'])
+                        end_time = pd.to_datetime(get_time_br())
                         
-                        # Cálculo preciso de minutos
-                        tempo_final = int(diff.total_seconds() / 60)
+                        # Diferença em minutos
+                        diff_min = (end_time - start_time).total_seconds() / 60
+                        tempo_final = int(round(diff_min))
                 except Exception as e:
                     tempo_final = 1
                 
                 if tempo_final < 1: tempo_final = 1
                 
-                # Mostra o tempo, mas não permite editar
-                st.info(f"⏱️ Tempo total calculado: **{tempo_final} minutos**")
+                # CAMPO DE TEMPO TRAVADO (SÓ LEITURA)
+                st.info(f"⏱️ Tempo calculado: **{tempo_final} min** (Automático)")
+                # Opcional: Campo hidden para garantir o valor no form, mas a lógica usa a variável tempo_final direto
 
                 with st.form(f"form_fim_{row['id_task']}"):
                     qtd = 1.0
@@ -708,8 +706,8 @@ def interface_colaborador_tarefas(uid):
                                 'valor': val_calc,
                                 'evidencia_img': pth,
                                 'qtd_lata': lata, 'qtd_pet': pet, 'qtd_oneway': ow, 'qtd_longneck': ln,
-                                'fim_execucao': get_time_br().strftime(fmt_exibicao),
-                                'tempo_total_min': tempo_final # Usa o tempo calculado
+                                'fim_execucao': get_time_br().strftime(fmt_completo),
+                                'tempo_total_min': tempo_final # Usa o valor calculado blindado
                             })
                             if 'f_id' in st.session_state: del st.session_state['f_id']
                             st.success("Tarefa entregue!")
@@ -780,14 +778,16 @@ def interface_colaborador_auto(uid):
                 st.error("Preencha os campos obrigatórios.")
 
 # --- ROTEAMENTO E PERSISTÊNCIA ---
-# Tenta restaurar sessão se não estiver logado
 if 'user_id' not in st.session_state:
     if not restore_session():
         login_screen()
     else:
         st.rerun()
 else:
-    # Se já estiver logado (na sessão ou via URL restaurada)
+    # Garante que a URL esteja atualizada com o ID do usuário logado
+    if 'uid' not in st.query_params:
+        st.query_params['uid'] = st.session_state['user_id']
+        
     r = st.session_state.get('role', 'Colaborador')
     
     if r == 'Supervisor': interface_supervisor()
