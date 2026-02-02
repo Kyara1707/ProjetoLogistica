@@ -30,7 +30,7 @@ st.markdown("""
         text-align: center;
         box-shadow: 2px 2px 5px rgba(0,0,0,0.05);
     }
-    /* Esconde o botão de fechar fullscreen das imagens para evitar toques acidentais */
+    /* Esconde botão fullscreen para evitar toques acidentais em mobile */
     button[title="View fullscreen"] {
         display: none;
     }
@@ -79,7 +79,7 @@ def format_currency(value):
     except: return "R$ 0,00"
 
 def get_time_br():
-    # Garante o horário correto subtraindo 3h do UTC do servidor
+    # Ajuste simples para horário Brasil (UTC-3)
     return datetime.utcnow() - timedelta(hours=3)
 
 # --- GERENCIAMENTO DE DADOS ---
@@ -204,7 +204,6 @@ def do_logout():
     st.rerun()
 
 def restore_session():
-    """Restaura a sessão baseado no ID salvo na URL"""
     qp = st.query_params
     if 'uid' in qp:
         uid = qp['uid']
@@ -226,6 +225,21 @@ def restore_session():
             return True
     return False
 
+# --- TELA DE REGRAS (NOVA) ---
+def interface_regras():
+    st.title("📜 Regras & Valores das Atividades")
+    rules = get_data("rules")
+    if not rules.empty:
+        # Prepara tabela bonita
+        df_show = rules.copy()
+        df_show = df_show[['atividade', 'valor']]
+        df_show.columns = ['Atividade', 'Valor Unitário']
+        df_show['Valor Unitário'] = df_show['Valor Unitário'].apply(format_currency)
+        df_show = df_show.sort_values('Atividade')
+        st.dataframe(df_show, use_container_width=True, hide_index=True)
+    else:
+        st.warning("Tabela de regras vazia.")
+
 # --- TELAS DO SISTEMA ---
 def login_screen():
     st.markdown("<h1 style='text-align: center; color: #0054a6;'>ProTrack Logística 🚛</h1>", unsafe_allow_html=True)
@@ -241,7 +255,6 @@ def login_screen():
 
             user = users[users['id_login'].astype(str) == lid]
             if not user.empty:
-                # SALVA LOGIN NA URL (PERSISTENCIA)
                 st.query_params["uid"] = str(user.iloc[0]['id_login'])
                 time.sleep(0.1)
                 st.rerun()
@@ -249,9 +262,10 @@ def login_screen():
 
 def interface_supervisor():
     st.sidebar.header(f"👮 {st.session_state.get('user_name', 'Sup')}")
-    menu = st.sidebar.radio("Menu", ["Validar KPIs", "Ajustes Financeiros", "Ranking", "Sair"])
+    menu = st.sidebar.radio("Menu", ["Validar KPIs", "Ajustes Financeiros", "Ranking", "Regras & Valores", "Sair"])
     
     if menu == "Sair": do_logout()
+    elif menu == "Regras & Valores": interface_regras()
     
     users = get_data("users")
     rules = get_data("rules")
@@ -349,13 +363,12 @@ def interface_supervisor():
         st.table(df_rank)
 
 def interface_operador():
-    # Verifica sessão a cada carregamento
     if 'role' not in st.session_state or 'user_id' not in st.session_state:
         do_logout()
 
     st.sidebar.header(f"👷 {st.session_state['user_name']}")
     
-    opcoes_menu = ["Tarefas", "Auto-Cadastro", "Dashboard", "Sair"]
+    opcoes_menu = ["Tarefas", "Auto-Cadastro", "Dashboard", "Regras & Valores", "Sair"]
     
     if st.session_state.get('role') == 'Operador':
         opcoes_menu.insert(0, "🚀 KPIs Diários")
@@ -364,6 +377,7 @@ def interface_operador():
     uid = st.session_state['user_id']
     
     if menu == "Sair": do_logout()
+    elif menu == "Regras & Valores": interface_regras()
 
     if menu == "🚀 KPIs Diários" and st.session_state.get('role') == 'Operador':
         st.title("🚀 Metas do Dia")
@@ -463,12 +477,13 @@ def interface_operador():
 
 def interface_conferente():
     st.sidebar.header(f"👤 {st.session_state.get('user_name', 'Conf')}")
-    menu = st.sidebar.radio("Menu", ["Criar Tarefa", "Aprovar Tarefas", "Sair"])
+    menu = st.sidebar.radio("Menu", ["Criar Tarefa", "Aprovar Tarefas", "Regras & Valores", "Sair"])
     users = get_data("users")
     tasks = get_data("tasks")
     rules = get_data("rules")
 
     if menu == "Sair": do_logout()
+    elif menu == "Regras & Valores": interface_regras()
 
     elif menu == "Criar Tarefa":
         st.title("📋 Nova Atividade")
@@ -507,9 +522,17 @@ def interface_conferente():
                     path_evidencia = ""
                     task_id_new = str(uuid.uuid4())
                     
+                    # --- NOMEAÇÃO DA FOTO INICIAL (CONFERENTE) ---
                     if foto_upload:
                         ext = foto_upload.name.split('.')[-1].lower()
-                        path_evidencia = f"{IMGS_PATH}/{task_id_new}_INICIAL.{ext}"
+                        # Formato: NOME_ATIVIDADE_DATA_INICIAL
+                        nome_safe = colab.replace(" ", "_").upper()
+                        atv_safe = atv.replace(" ", "_").replace("/", "-").replace("\\", "").upper()
+                        data_safe = datetime.now().strftime("%Y%m%d_%H%M%S")
+                        
+                        filename = f"{nome_safe}_{atv_safe}_{data_safe}_INICIAL.{ext}"
+                        path_evidencia = f"{IMGS_PATH}/{filename}"
+                        
                         with open(path_evidencia, "wb") as f:
                             f.write(foto_upload.getbuffer())
 
@@ -624,8 +647,6 @@ def interface_colaborador_tarefas(uid):
 
             if row['status'] == 'Rejeitada': st.error(f"Motivo: {row['obs_rejeicao']}")
             
-            # --- CRONÔMETRO DE ALTA PRECISÃO ---
-            # Salva formato completo com segundos
             fmt_completo = "%Y-%m-%d %H:%M:%S"
 
             if row['status'] != 'Em Execução':
@@ -642,15 +663,11 @@ def interface_colaborador_tarefas(uid):
                 st.markdown("---")
                 st.write("📝 Detalhes da Execução")
                 
-                # --- CÁLCULO DE TEMPO ROBUSTO (PANDAS) ---
                 tempo_final = 1
                 try:
                     if row['inicio_execucao'] and row['inicio_execucao'] != "-":
-                        # Usa pandas para converter, pois é mais flexível com formatos
                         start_time = pd.to_datetime(row['inicio_execucao'])
                         end_time = pd.to_datetime(get_time_br())
-                        
-                        # Diferença em minutos
                         diff_min = (end_time - start_time).total_seconds() / 60
                         tempo_final = int(round(diff_min))
                 except Exception as e:
@@ -658,9 +675,7 @@ def interface_colaborador_tarefas(uid):
                 
                 if tempo_final < 1: tempo_final = 1
                 
-                # CAMPO DE TEMPO TRAVADO (SÓ LEITURA)
                 st.info(f"⏱️ Tempo calculado: **{tempo_final} min** (Automático)")
-                # Opcional: Campo hidden para garantir o valor no form, mas a lógica usa a variável tempo_final direto
 
                 with st.form(f"form_fim_{row['id_task']}"):
                     qtd = 1.0
@@ -690,12 +705,14 @@ def interface_colaborador_tarefas(uid):
                         if not foto:
                             st.error("⚠️ Você precisa anexar uma foto para finalizar!")
                         else:
-                            nome_safe = st.session_state['user_name'].replace(" ", "_")
-                            atv_safe = row['atividade'].replace(" ", "_").replace("/", "-")
+                            # --- NOMEAÇÃO DA FOTO FINAL (OPERADOR) ---
+                            # Formato: NOME_ATIVIDADE_DATA_FINAL
+                            nome_safe = st.session_state['user_name'].replace(" ", "_").upper()
+                            atv_safe = row['atividade'].replace(" ", "_").replace("/", "-").replace("\\", "").upper()
                             data_safe = datetime.now().strftime("%Y%m%d_%H%M%S")
                             ext = foto.name.split('.')[-1].lower()
                             
-                            filename = f"{nome_safe}_{atv_safe}_{data_safe}.{ext}"
+                            filename = f"{nome_safe}_{atv_safe}_{data_safe}_FINAL.{ext}"
                             pth = f"{IMGS_PATH}/{filename}"
                             
                             with open(pth, "wb") as f: f.write(foto.getbuffer())
@@ -707,7 +724,7 @@ def interface_colaborador_tarefas(uid):
                                 'evidencia_img': pth,
                                 'qtd_lata': lata, 'qtd_pet': pet, 'qtd_oneway': ow, 'qtd_longneck': ln,
                                 'fim_execucao': get_time_br().strftime(fmt_completo),
-                                'tempo_total_min': tempo_final # Usa o valor calculado blindado
+                                'tempo_total_min': tempo_final 
                             })
                             if 'f_id' in st.session_state: del st.session_state['f_id']
                             st.success("Tarefa entregue!")
@@ -754,9 +771,16 @@ def interface_colaborador_auto(uid):
                 path_init = ""
                 task_id = str(uuid.uuid4())
                 
+                # --- NOMEAÇÃO DA FOTO AUTO-CADASTRO ---
                 if foto_init:
                     ext = foto_init.name.split('.')[-1].lower()
-                    path_init = f"{IMGS_PATH}/{task_id}_INICIAL.{ext}"
+                    # Formato: NOME_ATIVIDADE_DATA_AUTO_INICIAL
+                    nome_safe = st.session_state['user_name'].replace(" ", "_").upper()
+                    atv_safe = atv.replace(" ", "_").replace("/", "-").replace("\\", "").upper()
+                    data_safe = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    
+                    filename = f"{nome_safe}_{atv_safe}_{data_safe}_AUTO_INICIAL.{ext}"
+                    path_init = f"{IMGS_PATH}/{filename}"
                     with open(path_init, "wb") as f:
                         f.write(foto_init.getbuffer())
 
@@ -784,7 +808,6 @@ if 'user_id' not in st.session_state:
     else:
         st.rerun()
 else:
-    # Garante que a URL esteja atualizada com o ID do usuário logado
     if 'uid' not in st.query_params:
         st.query_params['uid'] = st.session_state['user_id']
         
