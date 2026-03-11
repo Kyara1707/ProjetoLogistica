@@ -1,3 +1,4 @@
 ﻿id_task;colaborador_id;conferente_id;atividade;area;descricao;sku_produto;prioridade;status;valor;data_criacao;inicio_execucao;fim_execucao;tempo_total_min;obs_rejeicao;qtd_lata;qtd_pet;qtd_oneway;qtd_longneck;qtd_produzida;evidencia_img
 f9574c7f-62e6-4045-95bd-ab9b0b1aeabd;12345678;05471598;BLITZ (EMPURRADA);9259;jjj;504 - 	PEPSI COLA PET 2L CAIXA C/6;Baixa;Pendente;1.5;11/03 18:40;;;0;;0;0;0;0;0;images/f9574c7f-62e6-4045-95bd-ab9b0b1aeabd_INICIAL.png
 cebcdf44-3a93-48bb-84f0-7392fa3f821b;66617600;05471598;TRANSBORDO;9259;jjj;1695 - 	BRAHMA CHOPP GFA VD 1L COM TTC;Baixa;Executada;4.5;11/03 18:40;2026-03-11 18:41:06;2026-03-11 18:43:07;2;;0;0;0;0;3.0;images/ALDEMIR_FERREIRA_DA_SILVA_TRANSBORDO_20260311_214307_FINAL.jpeg
+3dd5401a-d364-406c-b980-a8c6be6e7448;66617600;05471598;BLITZ (EMPURRADA);KK;KK ;504 - 	PEPSI COLA PET 2L CAIXA C/6;Alta;Pendente;1.5;11/03 18:51;;;0;;0;0;0;0;0;images/ALDEMIR_FERREIRA_DA_SILVA_BLITZ_(EMPURRADA)_504_11032026_185139_INICIAL.png
