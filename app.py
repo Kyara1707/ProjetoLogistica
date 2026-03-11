@@ -4,7 +4,7 @@ import os
 from datetime import datetime, timedelta
 import time
 import uuid
-from github import Github # Biblioteca que fará o envio para o GitHub
+from github import Github
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="ProTrack Logística", layout="wide", page_icon="🚛")
@@ -83,14 +83,12 @@ def get_time_br():
 # --- INTEGRAÇÃO DIRETA COM O GITHUB ---
 
 def get_github_repo():
-    """Autentica com o GitHub usando os Segredos configurados no Streamlit"""
     if "GITHUB_TOKEN" in st.secrets and "GITHUB_REPO" in st.secrets:
         g = Github(st.secrets["GITHUB_TOKEN"])
         return g.get_repo(st.secrets["GITHUB_REPO"])
     return None
 
 def sync_from_github(filename):
-    """Sincroniza o ficheiro do GitHub para o Streamlit (Traz os dados mais recentes)"""
     try:
         repo = get_github_repo()
         if repo:
@@ -98,57 +96,87 @@ def sync_from_github(filename):
             with open(f"{FILES_PATH}/{filename}.csv", "wb") as f:
                 f.write(contents.decoded_content)
     except Exception:
-        pass # Ignora se for a primeira vez e o ficheiro ainda não existir no GitHub
+        pass 
 
 def save_to_github(filename):
-    """Envia o ficheiro CSV guardado pelo Streamlit de volta para o GitHub"""
     try:
         repo = get_github_repo()
         if repo:
             file_path = f"{FILES_PATH}/{filename}.csv"
-            with open(file_path, "rb") as f:
-                content = f.read()
+            with open(file_path, "rb") as f: content = f.read()
             try:
                 contents = repo.get_contents(file_path)
-                repo.update_file(contents.path, f"App: Atualizou {filename}", content, contents.sha)
+                repo.update_file(contents.path, f"Atualizou {filename}", content, contents.sha)
             except Exception:
-                repo.create_file(file_path, f"App: Criou {filename}", content)
+                repo.create_file(file_path, f"Criou {filename}", content)
     except Exception as e:
-        st.error(f"Erro na sincronização com o GitHub: {e}")
+        st.error(f"Erro na sincronização CSV com o GitHub: {e}")
 
-# --- GERENCIAMENTO DE DADOS (COM SINCRONIZAÇÃO GITHUB) ---
+def upload_media_to_github(file_path):
+    """Nova função exclusiva para salvar as imagens/vídeos no GitHub"""
+    try:
+        repo = get_github_repo()
+        if repo:
+            with open(file_path, "rb") as f: content = f.read()
+            try:
+                contents = repo.get_contents(file_path)
+                repo.update_file(contents.path, f"Atualizou Imagem {file_path}", content, contents.sha)
+            except Exception:
+                repo.create_file(file_path, f"Upload Imagem {file_path}", content)
+    except Exception as e:
+        st.error(f"Erro ao salvar imagem no GitHub: {e}")
+
+def get_media_url(local_path):
+    """Garante que a imagem aparece mesmo se o servidor apagar a pasta local, puxando do GitHub"""
+    if not local_path or pd.isna(local_path): return ""
+    if os.path.exists(local_path): return local_path
+    
+    repo_name = st.secrets.get("GITHUB_REPO", "")
+    if repo_name:
+        return f"https://raw.githubusercontent.com/{repo_name}/main/{local_path}"
+    return ""
+
+def generate_media_name(usuario, atividade, sku, sufixo=""):
+    """Gera o nome do ficheiro no formato: USUARIO_ATIVIDADE_SKU_DATA_HORA"""
+    nome_safe = str(usuario).strip().replace(" ", "_").upper()
+    atv_safe = str(atividade).strip().replace(" ", "_").replace("/", "-").upper()
+    
+    if not sku or sku in ["-", "N/A"]:
+        sku_safe = "SEM_SKU"
+    else:
+        # Pega apenas o código do SKU antes do traço
+        sku_safe = str(sku).split(" - ")[0].strip().replace(" ", "_").upper()
+        
+    data_safe = get_time_br().strftime("%d%m%Y_%H%M%S")
+    
+    sufixo_str = f"_{sufixo}" if sufixo else ""
+    return f"{nome_safe}_{atv_safe}_{sku_safe}_{data_safe}{sufixo_str}"
+
+# --- GERENCIAMENTO DE DADOS ---
 
 def init_data():
     if not os.path.exists(f"{FILES_PATH}/rules.csv"):
-        df_regras = pd.DataFrame(NOVAS_REGRAS)
-        df_regras.to_csv(f"{FILES_PATH}/rules.csv", index=False, sep=';', encoding='utf-8-sig')
-    
+        pd.DataFrame(NOVAS_REGRAS).to_csv(f"{FILES_PATH}/rules.csv", index=False, sep=';', encoding='utf-8-sig')
     if not os.path.exists(f"{FILES_PATH}/users.csv"):
         pd.DataFrame(columns=['nome', 'id_login', 'tipo', 'rv_acumulada']).to_csv(f"{FILES_PATH}/users.csv", sep=';', index=False, encoding='utf-8-sig')
-    
     if not os.path.exists(f"{FILES_PATH}/tasks.csv"):
         cols = ['id_task', 'colaborador_id', 'conferente_id', 'atividade', 'area', 'descricao', 
                 'sku_produto', 'prioridade', 'status', 'valor', 'data_criacao', 'inicio_execucao', 
                 'fim_execucao', 'tempo_total_min', 'obs_rejeicao', 'qtd_lata', 'qtd_pet', 
                 'qtd_oneway', 'qtd_longneck', 'qtd_produzida', 'evidencia_img']
         pd.DataFrame(columns=cols).to_csv(f"{FILES_PATH}/tasks.csv", sep=';', index=False, encoding='utf-8-sig')
-
     if not os.path.exists(f"{FILES_PATH}/sku.csv"):
         pd.DataFrame(columns=['codigo', 'descricao']).to_csv(f"{FILES_PATH}/sku.csv", sep=';', index=False, encoding='utf-8-sig')
 
 def get_data(filename):
-    sync_from_github(filename) # Puxa do GitHub antes de ler
+    sync_from_github(filename) 
     path = f"{FILES_PATH}/{filename}.csv"
-    
     if not os.path.exists(path):
         init_data()
         if not os.path.exists(path): return pd.DataFrame()
-
     try:
-        try:
-            df = pd.read_csv(path, sep=';', encoding='utf-8-sig', dtype=str)
-        except UnicodeDecodeError:
-            df = pd.read_csv(path, sep=';', encoding='latin1', dtype=str)
+        try: df = pd.read_csv(path, sep=';', encoding='utf-8-sig', dtype=str)
+        except: df = pd.read_csv(path, sep=';', encoding='latin1', dtype=str)
         
         if filename == 'tasks':
             required = ['id_task', 'colaborador_id', 'status', 'valor', 'atividade']
@@ -158,29 +186,21 @@ def get_data(filename):
                          'fim_execucao', 'tempo_total_min', 'obs_rejeicao', 'qtd_lata', 'qtd_pet', 
                          'qtd_oneway', 'qtd_longneck', 'qtd_produzida', 'evidencia_img']
                  return pd.DataFrame(columns=cols)
-            
             df['valor'] = pd.to_numeric(df['valor'], errors='coerce').fillna(0.0)
             df['tempo_total_min'] = pd.to_numeric(df['tempo_total_min'], errors='coerce').fillna(0.0)
-            
         elif filename == 'users':
             if 'rv_acumulada' not in df.columns: df['rv_acumulada'] = 0.0
             df['rv_acumulada'] = pd.to_numeric(df['rv_acumulada'].astype(str).str.replace(',', '.'), errors='coerce').fillna(0.0)
-            
         elif filename == 'rules':
             df['valor'] = pd.to_numeric(df['valor'], errors='coerce').fillna(0.0)
-            
         return df
-    except Exception as e:
-        return pd.DataFrame()
+    except: return pd.DataFrame()
 
 def save_data(df, filename):
     try: 
-        # Guarda na máquina virtual primeiro
         df.to_csv(f"{FILES_PATH}/{filename}.csv", index=False, sep=';', encoding='utf-8-sig')
-        # Faz logo o upload para o GitHub!
         save_to_github(filename)
-    except Exception as e: 
-        st.error(f"Erro ao guardar {filename}.")
+    except Exception as e: st.error(f"Erro ao guardar {filename}.")
 
 def add_task_safe(task_dict):
     df = get_data("tasks")
@@ -193,8 +213,7 @@ def update_task_safe(task_id, updates):
     if df.empty: return
     idx = df[df['id_task'].astype(str) == str(task_id)].index
     if not idx.empty:
-        for col, val in updates.items():
-            df.at[idx[0], col] = val
+        for col, val in updates.items(): df.at[idx[0], col] = val
         save_data(df, "tasks")
 
 def update_rv_safe(user_id, amount):
@@ -209,17 +228,11 @@ def update_rv_safe(user_id, amount):
 
 def buscar_sku_interface_v2():
     df_sku = get_data("sku")
-    
-    if df_sku.empty:
-        st.warning("Base de SKUs vazia.")
-        return "-"
-
+    if df_sku.empty: return "-"
     df_sku['display'] = df_sku.iloc[:, 1].astype(str) + " | Cód: " + df_sku.iloc[:, 0].astype(str)
     opcoes = df_sku['display'].tolist()
     
-    st.write("Pesquise o Material:")
     escolha = st.selectbox("Selecione o Produto (Escreva para buscar)", [""] + opcoes)
-    
     codigo_travado = ""
     nome_produto = "-"
     
@@ -228,16 +241,13 @@ def buscar_sku_interface_v2():
             parts = escolha.split(" | Cód: ")
             nome_produto = parts[0]
             codigo_travado = parts[1]
-        except:
-            codigo_travado = "Erro"
+        except: codigo_travado = "Erro"
             
     st.text_input("Código do SKU (Travado)", value=codigo_travado, disabled=True)
-    
-    if codigo_travado and codigo_travado != "Erro":
-        return f"{codigo_travado} - {nome_produto}"
+    if codigo_travado and codigo_travado != "Erro": return f"{codigo_travado} - {nome_produto}"
     return "-"
 
-# --- GESTÃO DE SESSÃO E LOGIN ---
+# --- GESTÃO DE SESSÃO ---
 def do_logout():
     st.query_params.clear()
     st.session_state.clear()
@@ -253,31 +263,22 @@ def restore_session():
             st.session_state['user_id'] = str(user.iloc[0]['id_login'])
             st.session_state['user_name'] = user.iloc[0]['nome']
             tipo = str(user.iloc[0]['tipo']).upper()
-            
-            if st.session_state['user_id'] in SUPERVISORES_PERMITIDOS: 
-                st.session_state['role'] = 'Supervisor'
-            elif 'OPERADOR' in tipo: 
-                st.session_state['role'] = 'Operador'
-            elif 'CONFERENTE' in tipo: 
-                st.session_state['role'] = 'Conferente'
-            else: 
-                st.session_state['role'] = 'Colaborador'
+            if st.session_state['user_id'] in SUPERVISORES_PERMITIDOS: st.session_state['role'] = 'Supervisor'
+            elif 'OPERADOR' in tipo: st.session_state['role'] = 'Operador'
+            elif 'CONFERENTE' in tipo: st.session_state['role'] = 'Conferente'
+            else: st.session_state['role'] = 'Colaborador'
             return True
     return False
 
 # --- TELA DE REGRAS ---
 def interface_regras():
-    st.title("📜 Regras & Valores das Atividades")
+    st.title("📜 Regras & Valores")
     rules = get_data("rules")
     if not rules.empty:
-        df_show = rules.copy()
-        df_show = df_show[['atividade', 'valor']]
+        df_show = rules.copy()[['atividade', 'valor']]
         df_show.columns = ['Atividade', 'Valor Unitário']
         df_show['Valor Unitário'] = df_show['Valor Unitário'].apply(format_currency)
-        df_show = df_show.sort_values('Atividade')
-        st.dataframe(df_show, use_container_width=True, hide_index=True)
-    else:
-        st.warning("Tabela de regras vazia.")
+        st.dataframe(df_show.sort_values('Atividade'), use_container_width=True, hide_index=True)
 
 # --- TELAS DO SISTEMA ---
 def login_screen():
@@ -288,10 +289,6 @@ def login_screen():
         lid = st.text_input("ID").strip()
         if st.button("ENTRAR"):
             users = get_data("users")
-            if users.empty:
-                st.error("Ficheiro de utilizadores vazio ou não encontrado.")
-                return
-
             user = users[users['id_login'].astype(str) == lid]
             if not user.empty:
                 st.query_params["uid"] = str(user.iloc[0]['id_login'])
@@ -302,547 +299,293 @@ def login_screen():
 def interface_supervisor():
     st.sidebar.header(f"👮 {st.session_state.get('user_name', 'Sup')}")
     menu = st.sidebar.radio("Menu", ["Validar KPIs", "Ajustes Financeiros", "Ranking", "Regras & Valores", "Sair"])
-    
     if menu == "Sair": do_logout()
     elif menu == "Regras & Valores": interface_regras()
     
-    users = get_data("users")
-    rules = get_data("rules")
-    tasks = get_data("tasks")
+    users, rules, tasks = get_data("users"), get_data("rules"), get_data("tasks")
 
     if menu == "Validar KPIs":
         st.title("🛡️ Validar Metas (KPIs)")
-        if tasks.empty:
-            st.info("Nenhuma tarefa para validar.")
+        pendentes = tasks[(tasks['status'] == 'Aguardando Validação') & (tasks['atividade'].isin(['EFC', 'TMA', 'FEFO']))]
+        if pendentes.empty: st.info("Tudo validado!")
         else:
-            pendentes = tasks[(tasks['status'] == 'Aguardando Validação') & (tasks['atividade'].isin(['EFC', 'TMA', 'FEFO']))]
-            
-            if pendentes.empty: st.info("Tudo validado!")
-            else:
-                for i, row in pendentes.iterrows():
-                    k_ok = f"btn_ok_{row['id_task']}_{i}"
-                    k_nok = f"btn_nok_{row['id_task']}_{i}"
-                    
-                    cname = users[users['id_login'].astype(str) == str(row['colaborador_id'])]['nome'].values
-                    nome_colab = cname[0] if len(cname) > 0 else row['colaborador_id']
-                    
-                    with st.container():
-                        col1, col2, col3 = st.columns([3, 1, 1])
-                        val = float(row['valor'])
-                        status_user = "OK" if val > 0 else "NOK"
-                        
-                        col1.markdown(f"**{nome_colab}** | {row['atividade']} | Declarado: **{status_user}** ({format_currency(val)})")
-                        
-                        if col2.button("✅ Confirmar", key=k_ok):
-                            if update_rv_safe(row['colaborador_id'], val):
-                                update_task_safe(row['id_task'], {'status': 'Executada'})
-                                st.rerun()
-                                
-                        if col3.button("✏️ Alterar", key=k_nok):
-                            novo_status = 'Não Atingido' if val > 0 else 'Executada'
-                            novo_valor = 0.0
-                            obs = "Supervisor alterou para NOK"
-                            
-                            if val == 0: 
-                                try: novo_valor = float(rules.loc[rules['atividade'] == row['atividade'], 'valor'].values[0])
-                                except: novo_valor = 0.0
-                                obs = "Supervisor alterou para OK"
-
-                            if update_rv_safe(row['colaborador_id'], novo_valor):
-                                update_task_safe(row['id_task'], {'status': novo_status, 'valor': novo_valor, 'obs_rejeicao': obs})
-                                st.rerun()
-                        st.divider()
+            for i, row in pendentes.iterrows():
+                cname = users[users['id_login'].astype(str) == str(row['colaborador_id'])]['nome'].values
+                nome_colab = cname[0] if len(cname) > 0 else row['colaborador_id']
+                with st.container():
+                    col1, col2, col3 = st.columns([3, 1, 1])
+                    val = float(row['valor'])
+                    col1.markdown(f"**{nome_colab}** | {row['atividade']} | Declarado: **{'OK' if val > 0 else 'NOK'}** ({format_currency(val)})")
+                    if col2.button("✅ Confirmar", key=f"ok_{row['id_task']}"):
+                        if update_rv_safe(row['colaborador_id'], val):
+                            update_task_safe(row['id_task'], {'status': 'Executada'})
+                            st.rerun()
+                    if col3.button("✏️ Alterar", key=f"nok_{row['id_task']}"):
+                        novo_status = 'Não Atingido' if val > 0 else 'Executada'
+                        novo_valor = float(rules.loc[rules['atividade'] == row['atividade'], 'valor'].values[0]) if val == 0 else 0.0
+                        obs = "Supervisor alterou status"
+                        if update_rv_safe(row['colaborador_id'], novo_valor):
+                            update_task_safe(row['id_task'], {'status': novo_status, 'valor': novo_valor, 'obs_rejeicao': obs})
+                            st.rerun()
+                    st.divider()
 
     elif menu == "Ajustes Financeiros":
-        st.title("💰 Ajuste de Saldo (Crédito/Débito)")
-        
+        st.title("💰 Ajuste de Saldo")
         with st.form("ajuste_form"):
-            ops = users['nome'].tolist()
-            colab = st.selectbox("Colaborador", ops)
+            colab = st.selectbox("Colaborador", users['nome'].tolist())
             tipo = st.radio("Tipo de Ajuste", ["Crédito (+)", "Débito (-)"], horizontal=True)
             valor = st.number_input("Valor (R$)", min_value=0.0, step=0.5)
-            motivo = st.text_input("Motivo (Ex: Bónus Meta Semanal, Quebra de Material)")
-            
-            if st.form_submit_button("PROCESSAR AJUSTE"):
+            motivo = st.text_input("Motivo")
+            if st.form_submit_button("PROCESSAR"):
                 if valor > 0 and motivo:
                     cid = users[users['nome'] == colab].iloc[0]['id_login']
-                    valor_final = valor if tipo == "Crédito (+)" else -valor
-                    
-                    if update_rv_safe(cid, valor_final):
-                        task = {
-                            'id_task': str(uuid.uuid4()), 
-                            'colaborador_id': str(cid),
-                            'conferente_id': st.session_state['user_id'],
-                            'atividade': "AJUSTE MANUAL",
-                            'area': "ADM",
-                            'descricao': f"{tipo}: {motivo}",
-                            'sku_produto': "-",
-                            'prioridade': 'Alta',
-                            'status': 'Executada',
-                            'valor': float(valor_final),
-                            'data_criacao': get_time_br().strftime("%d/%m %H:%M"),
-                            'inicio_execucao': "-", 'fim_execucao': "-", 
-                            'tempo_total_min': 0, 'obs_rejeicao': "", 
-                            'qtd_lata': 0, 'qtd_pet': 0, 'qtd_oneway': 0, 'qtd_longneck': 0, 
+                    v_final = valor if tipo == "Crédito (+)" else -valor
+                    if update_rv_safe(cid, v_final):
+                        add_task_safe({
+                            'id_task': str(uuid.uuid4()), 'colaborador_id': str(cid), 'conferente_id': st.session_state['user_id'],
+                            'atividade': "AJUSTE MANUAL", 'area': "ADM", 'descricao': f"{tipo}: {motivo}",
+                            'sku_produto': "-", 'prioridade': 'Alta', 'status': 'Executada', 'valor': float(v_final),
+                            'data_criacao': get_time_br().strftime("%d/%m %H:%M"), 'inicio_execucao': "-", 'fim_execucao': "-", 
+                            'tempo_total_min': 0, 'obs_rejeicao': "", 'qtd_lata': 0, 'qtd_pet': 0, 'qtd_oneway': 0, 'qtd_longneck': 0, 
                             'qtd_produzida': 0, 'evidencia_img': ""
-                        }
-                        add_task_safe(task)
-                        st.success(f"Sucesso! Ajuste de {format_currency(valor_final)} efetuado.")
+                        })
+                        st.success("Ajuste efetuado.")
                         time.sleep(1)
                         st.rerun()
-                    else: st.error("Erro ao atualizar saldo.")
-                else:
-                    st.warning("Insira o valor e o motivo.")
 
     elif menu == "Ranking":
         st.title("🏆 Ranking Geral")
-        df_rank = users[['nome', 'rv_acumulada']].copy()
-        df_rank = df_rank.sort_values('rv_acumulada', ascending=False).reset_index(drop=True)
+        df_rank = users[['nome', 'rv_acumulada']].sort_values('rv_acumulada', ascending=False).reset_index(drop=True)
         df_rank['rv_acumulada'] = df_rank['rv_acumulada'].apply(format_currency)
         st.table(df_rank)
 
 def interface_operador():
-    if 'role' not in st.session_state or 'user_id' not in st.session_state:
-        do_logout()
-
     st.sidebar.header(f"👷 {st.session_state['user_name']}")
-    
-    opcoes_menu = ["Tarefas", "Auto-Cadastro", "Dashboard", "Regras & Valores", "Sair"]
-    
-    if st.session_state.get('role') == 'Operador':
-        opcoes_menu.insert(0, "🚀 KPIs Diários")
-        
-    menu = st.sidebar.radio("Menu", opcoes_menu)
+    ops_menu = ["Tarefas", "Auto-Cadastro", "Dashboard", "Regras & Valores", "Sair"]
+    if st.session_state.get('role') == 'Operador': ops_menu.insert(0, "🚀 KPIs Diários")
+    menu = st.sidebar.radio("Menu", ops_menu)
     uid = st.session_state['user_id']
     
     if menu == "Sair": do_logout()
     elif menu == "Regras & Valores": interface_regras()
-
-    if menu == "🚀 KPIs Diários" and st.session_state.get('role') == 'Operador':
+    elif menu == "🚀 KPIs Diários":
         st.title("🚀 Metas do Dia")
-        rules = get_data("rules")
+        rules, tasks = get_data("rules"), get_data("tasks")
+        def get_v(n): return float(rules[rules['atividade']==n]['valor'].values[0]) if not rules[rules['atividade']==n].empty else 0.0
+        v_efc, v_tma, v_fefo = get_v('EFC'), get_v('TMA'), get_v('FEFO')
+        ja_fez = not tasks[(tasks['colaborador_id'].astype(str)==uid) & (tasks['data_criacao'].str.contains(get_time_br().strftime("%d/%m"))) & (tasks['atividade'].isin(['EFC','TMA']))].empty if not tasks.empty else False
         
-        def get_val(name):
-            try: return float(rules[rules['atividade']==name]['valor'].values[0])
-            except: return 0.0
-            
-        v_efc = get_val('EFC')
-        v_tma = get_val('TMA')
-        v_fefo = get_val('FEFO')
-        
-        hoje = get_time_br().strftime("%d/%m")
-        tasks = get_data("tasks")
-        
-        ja_fez = False
-        if not tasks.empty:
-            tasks['colaborador_id'] = tasks['colaborador_id'].astype(str)
-            ja_fez = not tasks[(tasks['colaborador_id']==uid) & (tasks['data_criacao'].str.contains(hoje)) & (tasks['atividade'].isin(['EFC','TMA']))].empty
-        
-        if ja_fez:
-            st.info("✅ KPIs de hoje já enviados e aguardam validação.")
+        if ja_fez: st.info("✅ KPIs enviados e aguardam validação.")
         else:
-            with st.form("kpi_form"):
-                st.write("Marque as metas batidas:")
-                c_efc = st.checkbox(f"EFC ({format_currency(v_efc)})")
-                c_tma = st.checkbox(f"TMA ({format_currency(v_tma)})")
-                c_fefo = st.checkbox(f"FEFO ({format_currency(v_fefo)})")
-                
+            with st.form("kpi"):
+                c_efc, c_tma, c_fefo = st.checkbox(f"EFC ({format_currency(v_efc)})"), st.checkbox(f"TMA ({format_currency(v_tma)})"), st.checkbox(f"FEFO ({format_currency(v_fefo)})")
                 if st.form_submit_button("ENVIAR"):
-                    lista = [("EFC", c_efc, v_efc), ("TMA", c_tma, v_tma), ("FEFO", c_fefo, v_fefo)]
-                    for nome, check, val in lista:
-                        vf = val if check else 0.0
-                        task = {
-                            'id_task': str(uuid.uuid4()),
-                            'colaborador_id': uid,
-                            'conferente_id': 'SISTEMA',
-                            'atividade': nome,
-                            'area': 'OPERAÇÃO',
-                            'descricao': 'Auto-Avaliação',
-                            'sku_produto': '-', 'prioridade': 'Alta',
-                            'status': 'Aguardando Validação',
-                            'valor': float(vf),
-                            'data_criacao': get_time_br().strftime("%d/%m %H:%M"),
-                            'inicio_execucao': "-", 'fim_execucao': "-", 
-                            'tempo_total_min': 0, 'obs_rejeicao': "", 
-                            'qtd_lata': 0, 'qtd_pet': 0, 'qtd_oneway': 0, 'qtd_longneck': 0, 
-                            'qtd_produzida': 0, 'evidencia_img': ""
-                        }
-                        add_task_safe(task)
-                    st.success("Enviado com sucesso!")
-                    time.sleep(1)
-                    st.rerun()
-
-    elif menu == "Tarefas":
-        interface_colaborador_tarefas(uid)
-        
-    elif menu == "Auto-Cadastro":
-        interface_colaborador_auto(uid)
-        
+                    for n, c, v in [("EFC", c_efc, v_efc), ("TMA", c_tma, v_tma), ("FEFO", c_fefo, v_fefo)]:
+                        add_task_safe({
+                            'id_task': str(uuid.uuid4()), 'colaborador_id': uid, 'conferente_id': 'SISTEMA',
+                            'atividade': n, 'area': 'OPERAÇÃO', 'descricao': 'Auto-Avaliação', 'sku_produto': '-', 
+                            'prioridade': 'Alta', 'status': 'Aguardando Validação', 'valor': float(v if c else 0.0),
+                            'data_criacao': get_time_br().strftime("%d/%m %H:%M"), 'inicio_execucao': "-", 'fim_execucao': "-", 
+                            'tempo_total_min': 0, 'obs_rejeicao': "", 'qtd_lata': 0, 'qtd_pet': 0, 'qtd_oneway': 0, 
+                            'qtd_longneck': 0, 'qtd_produzida': 0, 'evidencia_img': ""
+                        })
+                    st.success("Enviado!")
+                    time.sleep(1); st.rerun()
+    elif menu == "Tarefas": interface_colaborador_tarefas(uid)
+    elif menu == "Auto-Cadastro": interface_colaborador_auto(uid)
     elif menu == "Dashboard":
         st.title("📊 O Seu Desempenho")
-        users = get_data("users")
-        meu_saldo = users[users['id_login'].astype(str) == uid]['rv_acumulada'].values
-        saldo_real = float(meu_saldo[0]) if len(meu_saldo) > 0 else 0.0
+        users, tasks = get_data("users"), get_data("tasks")
+        meu_saldo = float(users[users['id_login'].astype(str) == uid]['rv_acumulada'].values[0])
+        saldo_exibido = min(meu_saldo, LIMITE_RV_OPERADOR)
+        minhas = tasks[(tasks['colaborador_id'].astype(str) == uid) & (tasks['status'] == 'Executada')] if not tasks.empty else pd.DataFrame()
         
-        saldo_exibido = min(saldo_real, LIMITE_RV_OPERADOR)
-        
-        tasks = get_data("tasks")
-        total_tarefas = 0
-        soma_kpis = 0.0
-
-        if not tasks.empty:
-            minhas = tasks[(tasks['colaborador_id'].astype(str) == uid) & (tasks['status'] == 'Executada')]
-            total_tarefas = len(minhas)
-            kpi_tasks = minhas[minhas['atividade'].isin(['EFC', 'TMA', 'FEFO'])]
-            if not kpi_tasks.empty:
-                soma_kpis = kpi_tasks['valor'].sum()
-
         c1, c2, c3 = st.columns(3)
-        c1.metric("💰 Saldo Total (RV)", format_currency(saldo_exibido))
-        c2.metric("📦 Tarefas Executadas", total_tarefas)
+        c1.metric("💰 Saldo", format_currency(saldo_exibido))
+        c2.metric("📦 Tarefas", len(minhas))
+        c3.metric("🎯 Ganho KPIs", format_currency(minhas[minhas['atividade'].isin(['EFC', 'TMA', 'FEFO'])]['valor'].sum() if not minhas.empty else 0))
         
-        if st.session_state.get('role') == 'Operador':
-            c3.metric("🎯 Ganho com KPIs", format_currency(soma_kpis))
-        else:
-            c3.metric("⭐ Status", "Ativo") 
-
-        if saldo_real > LIMITE_RV_OPERADOR:
-            st.warning(f"🔒 Teto de RV atingido! O seu acumulado real é {format_currency(saldo_real)}, mas o pagamento é limitado a {format_currency(LIMITE_RV_OPERADOR)}.")
-
-        st.subheader("Histórico Recente")
-        if not tasks.empty:
-            hist = tasks[(tasks['colaborador_id'].astype(str) == uid)].sort_values('data_criacao', ascending=False).head(10)
-            st.dataframe(hist[['data_criacao', 'atividade', 'status', 'valor']], use_container_width=True)
+        if meu_saldo > LIMITE_RV_OPERADOR: st.warning(f"🔒 Teto atingido! Real: {format_currency(meu_saldo)}. Pagamento limitado a {format_currency(LIMITE_RV_OPERADOR)}.")
 
 def interface_conferente():
     st.sidebar.header(f"👤 {st.session_state.get('user_name', 'Conf')}")
     menu = st.sidebar.radio("Menu", ["Criar Tarefa", "Aprovar Tarefas", "Regras & Valores", "Sair"])
-    users = get_data("users")
-    tasks = get_data("tasks")
-    rules = get_data("rules")
+    users, tasks, rules = get_data("users"), get_data("tasks"), get_data("rules")
 
     if menu == "Sair": do_logout()
     elif menu == "Regras & Valores": interface_regras()
-
     elif menu == "Criar Tarefa":
         st.title("📋 Nova Atividade")
-
         ops = users[~users['tipo'].str.lower().str.contains('conferente', na=False)]['nome'].tolist()
-        atvs = rules['atividade'].tolist() if not rules.empty else []
-        
         colab = st.selectbox("Colaborador", ops)
-        atv = st.selectbox("Atividade", atvs)
+        atv = st.selectbox("Atividade", rules['atividade'].tolist() if not rules.empty else [])
         
-        sku_resultado = "-"
-        if atv and ("REPACK" not in atv) and ("SELO VERMELHO" not in atv):
-            st.markdown("---")
-            sku_resultado = buscar_sku_interface_v2()
-            st.markdown("---")
-        else:
-            st.info("SKU não obrigatório para esta atividade.")
-            sku_resultado = "N/A"
+        sku_resultado = buscar_sku_interface_v2() if atv and "REPACK" not in atv and "SELO" not in atv else "N/A"
 
         with st.form("task_form"):
             area = st.text_input("Local")
             obs = st.text_area("Obs")
             prio = st.select_slider("Prioridade", ["Baixa", "Média", "Alta"])
-
-            st.markdown("### 📷 Evidência Inicial (Opcional)")
-            foto_upload = st.file_uploader("Carregar Foto ou Vídeo", type=['png', 'jpg', 'jpeg', 'mp4', 'avi'])
+            foto_upload = st.file_uploader("Carregar Foto", type=['png', 'jpg', 'jpeg', 'mp4'])
             
             if st.form_submit_button("Enviar"):
                 if colab and atv:
                     cid = users[users['nome'] == colab].iloc[0]['id_login']
-                    val = 0.0
-                    if not rules.empty:
-                        val_lookup = rules.loc[rules['atividade'] == atv, 'valor']
-                        if not val_lookup.empty: val = val_lookup.values[0]
-
-                    path_evidencia = ""
-                    task_id_new = str(uuid.uuid4())
+                    val = float(rules.loc[rules['atividade'] == atv, 'valor'].values[0]) if not rules.empty and not rules.loc[rules['atividade'] == atv].empty else 0.0
                     
+                    path_evidencia = ""
                     if foto_upload:
                         ext = foto_upload.name.split('.')[-1].lower()
-                        path_evidencia = f"{IMGS_PATH}/{task_id_new}_INICIAL.{ext}"
-                        with open(path_evidencia, "wb") as f:
-                            f.write(foto_upload.getbuffer())
+                        # Usa a nova função de nomenclatura
+                        base_name = generate_media_name(colab, atv, sku_resultado, "INICIAL")
+                        path_evidencia = f"{IMGS_PATH}/{base_name}.{ext}"
+                        with open(path_evidencia, "wb") as f: f.write(foto_upload.getbuffer())
+                        
+                        # Salva imagem no GitHub
+                        upload_media_to_github(path_evidencia)
 
-                    task = {
-                        'id_task': task_id_new,
-                        'colaborador_id': str(cid), 
-                        'conferente_id': st.session_state['user_id'],
-                        'atividade': atv, 'area': area, 'descricao': obs, 
-                        'sku_produto': sku_resultado, 'prioridade': prio, 'status': 'Pendente',
-                        'valor': float(val), 'data_criacao': get_time_br().strftime("%d/%m %H:%M"),
-                        'inicio_execucao': None, 'fim_execucao': None, 
-                        'tempo_total_min': 0, 'obs_rejeicao': '',
-                        'qtd_lata': 0, 'qtd_pet': 0, 'qtd_oneway': 0, 'qtd_longneck': 0, 
-                        'qtd_produzida': 0, 'evidencia_img': path_evidencia
-                    }
-                    add_task_safe(task)
-                    st.success(f"Tarefa criada para {colab}!")
-                else:
-                    st.error("Selecione colaborador e atividade")
+                    add_task_safe({
+                        'id_task': str(uuid.uuid4()), 'colaborador_id': str(cid), 'conferente_id': st.session_state['user_id'],
+                        'atividade': atv, 'area': area, 'descricao': obs, 'sku_produto': sku_resultado, 
+                        'prioridade': prio, 'status': 'Pendente', 'valor': val, 'data_criacao': get_time_br().strftime("%d/%m %H:%M"),
+                        'inicio_execucao': None, 'fim_execucao': None, 'tempo_total_min': 0, 'obs_rejeicao': '',
+                        'qtd_lata': 0, 'qtd_pet': 0, 'qtd_oneway': 0, 'qtd_longneck': 0, 'qtd_produzida': 0, 'evidencia_img': path_evidencia
+                    })
+                    st.success("Criado!")
+                else: st.error("Preencha tudo")
 
     elif menu == "Aprovar Tarefas":
         st.title("✅ Aprovação")
-        if not tasks.empty:
-            pends = tasks[(tasks['status'] == 'Aguardando Aprovação') & (~tasks['atividade'].isin(['EFC', 'TMA', 'FEFO']))]
-            
-            if pends.empty: st.info("Nenhuma tarefa pendente.")
-            
-            for i, row in pends.iterrows():
-                k_approve = f"ok_{row['id_task']}_{i}"
-                k_reject_btn = f"rej_btn_{row['id_task']}_{i}"
-                k_reason = f"reason_{row['id_task']}_{i}"
+        pends = tasks[(tasks['status'] == 'Aguardando Aprovação') & (~tasks['atividade'].isin(['EFC', 'TMA', 'FEFO']))] if not tasks.empty else pd.DataFrame()
+        if pends.empty: st.info("Nenhuma pendente.")
+        for i, row in pends.iterrows():
+            cname = users[users['id_login'].astype(str) == str(row['colaborador_id'])]['nome'].values
+            with st.container():
+                st.markdown(f"**{cname[0] if len(cname)>0 else 'User'}** - {row['atividade']}")
+                st.caption(f"📦 Material: {row['sku_produto']}")
+                c1, c2 = st.columns(2)
+                c1.write(f"⏱️ {row['tempo_total_min']} min")
+                c1.metric("A Pagar", format_currency(row['valor']))
                 
-                cname = users[users['id_login'].astype(str) == str(row['colaborador_id'])]['nome'].values
-                name = cname[0] if len(cname)>0 else "Desconhecido"
+                # Exibe a imagem, puxando do GitHub se não tiver localmente
+                img_url = get_media_url(row['evidencia_img'])
+                if img_url: 
+                    if 'mp4' in img_url.lower(): c2.video(img_url)
+                    else: c2.image(img_url, width=200)
                 
-                with st.container():
-                    st.markdown(f"**{name}** - {row['atividade']}")
-                    sku_info = row['sku_produto'] if pd.notna(row['sku_produto']) else "-"
-                    st.caption(f"📦 Material: {sku_info}")
+                b1, b2 = st.columns(2)
+                if b1.button("✅ Aprovar", key=f"ok_{row['id_task']}"):
+                    if update_rv_safe(row['colaborador_id'], row['valor']):
+                        update_task_safe(row['id_task'], {'status': 'Executada'})
+                        st.rerun()
+                with b2.expander("❌ Rejeitar"):
+                    motivo = st.text_input("Motivo:", key=f"m_{row['id_task']}")
+                    if st.button("Rejeitar", key=f"r_{row['id_task']}"):
+                        update_task_safe(row['id_task'], {'status': 'Rejeitada', 'obs_rejeicao': motivo})
+                        st.rerun()
+                st.divider()
 
-                    c1, c2 = st.columns(2)
-                    c1.write(f"⏱️ {row['tempo_total_min']} min")
-                    
-                    if row['atividade'] == 'REPACK':
-                        c1.info(f"🥫L:{row['qtd_lata']} 🍾P:{row['qtd_pet']} 🧊OW:{row['qtd_oneway']} 🍺LN:{row['qtd_longneck']}")
-                    else:
-                        c1.info(f"Qtd: {row['qtd_produzida']}")
-                    
-                    c1.metric("A Pagar", format_currency(row['valor']))
-                    
-                    if pd.notna(row['evidencia_img']) and row['evidencia_img']:
-                        if os.path.exists(row['evidencia_img']):
-                            ext = row['evidencia_img'].split('.')[-1].lower()
-                            if ext in ['mp4', 'avi', 'mov', 'mkv']:
-                                c2.video(row['evidencia_img'])
-                            else:
-                                try: c2.image(row['evidencia_img'], width=200, caption="Evidência")
-                                except: c2.error("Erro ao carregar imagem")
-                        else:
-                            c2.warning("Ficheiro não encontrado no servidor.")
-                    
-                    b1, b2 = st.columns(2)
-                    if b1.button("✅ Aprovar", key=k_approve):
-                        if update_rv_safe(row['colaborador_id'], row['valor']):
-                            update_task_safe(row['id_task'], {'status': 'Executada'})
-                            st.success("Pago!")
-                            time.sleep(0.5)
-                            st.rerun()
-                    
-                    with b2:
-                        with st.expander("❌ Rejeitar"):
-                            motivo = st.text_input("Motivo:", key=k_reason)
-                            if st.button("Confirmar Rejeição", key=k_reject_btn):
-                                update_task_safe(row['id_task'], {'status': 'Rejeitada', 'obs_rejeicao': motivo})
-                                st.rerun()
-                    st.divider()
-        else: st.info("Sem tarefas.")
-
-# --- FUNÇÕES REUTILIZÁVEIS ---
 def interface_colaborador_tarefas(uid):
     tasks = get_data("tasks")
     st.title("🗂️ Tarefas")
-    
-    if tasks.empty:
-        st.info("Nenhuma tarefa encontrada.")
-        return
-
-    tasks['colaborador_id'] = tasks['colaborador_id'].astype(str)
-    mask_pend = (tasks['colaborador_id'] == str(uid)) & \
-                (tasks['status'].isin(['Pendente', 'Em Execução', 'Rejeitada'])) & \
-                (~tasks['atividade'].isin(['EFC', 'TMA', 'FEFO']))
-    
-    todo = tasks[mask_pend]
-    
-    if todo.empty: st.info("Nenhuma tarefa pendente.")
+    todo = tasks[(tasks['colaborador_id'].astype(str) == str(uid)) & (tasks['status'].isin(['Pendente', 'Em Execução', 'Rejeitada'])) & (~tasks['atividade'].isin(['EFC', 'TMA', 'FEFO']))] if not tasks.empty else pd.DataFrame()
+    if todo.empty: st.info("Sem tarefas.")
     
     for i, row in todo.iterrows():
-        k_init = f"init_{row['id_task']}"
-        k_end = f"end_{row['id_task']}"
-        
         with st.expander(f"{row['atividade']} ({row['status']})", expanded=True):
             st.write(f"**Local:** {row['area']}")
             st.write(f"**Material:** {row['sku_produto']}")
-            st.write(f"**Obs:** {row['descricao']}")
             
-            if pd.notna(row['evidencia_img']) and row['evidencia_img'] and os.path.exists(row['evidencia_img']):
-                 ext = row['evidencia_img'].split('.')[-1].lower()
-                 if ext in ['mp4', 'avi', 'mov', 'mkv']:
-                     st.video(row['evidencia_img'])
-                 else:
-                     st.image(row['evidencia_img'], width=100, caption="Ref. Inicial")
-
-            if row['status'] == 'Rejeitada': st.error(f"Motivo: {row['obs_rejeicao']}")
-            
-            fmt_completo = "%Y-%m-%d %H:%M:%S"
+            img_url = get_media_url(row.get('evidencia_img', ''))
+            if img_url:
+                if 'mp4' in img_url.lower(): st.video(img_url)
+                else: st.image(img_url, width=150)
 
             if row['status'] != 'Em Execução':
-                if st.button("▶️ INICIAR", key=k_init):
-                    now_str = get_time_br().strftime(fmt_completo)
-                    update_task_safe(row['id_task'], {'status': 'Em Execução', 'inicio_execucao': now_str})
+                if st.button("▶️ INICIAR", key=f"in_{row['id_task']}"):
+                    update_task_safe(row['id_task'], {'status': 'Em Execução', 'inicio_execucao': get_time_br().strftime("%Y-%m-%d %H:%M:%S")})
                     st.rerun()
             else:
-                if st.button("⏹️ FINALIZAR", key=k_end):
+                if st.button("⏹️ FINALIZAR", key=f"en_{row['id_task']}"):
                     st.session_state['f_id'] = row['id_task']
                     st.rerun()
 
             if st.session_state.get('f_id') == row['id_task']:
-                st.markdown("---")
-                st.write("📝 Detalhes da Execução")
-                
-                tempo_final = 1
-                try:
-                    if row['inicio_execucao'] and row['inicio_execucao'] != "-":
-                        start_time = pd.to_datetime(row['inicio_execucao'])
-                        end_time = pd.to_datetime(get_time_br())
-                        diff_min = (end_time - start_time).total_seconds() / 60
-                        tempo_final = int(round(diff_min))
-                except Exception as e:
-                    tempo_final = 1
-                
-                if tempo_final < 1: tempo_final = 1
-                
-                st.info(f"⏱️ Tempo calculado: **{tempo_final} min** (Automático)")
-
-                with st.form(f"form_fim_{row['id_task']}"):
-                    qtd = 1.0
-                    val_calc = float(row['valor'])
-                    lata, pet, ow, ln = 0,0,0,0
+                st.write("📝 Detalhes")
+                with st.form(f"form_{row['id_task']}"):
+                    qtd = st.number_input("Quantidade", 1.0)
+                    val_calc = float(row['valor']) * qtd
                     
-                    if row['atividade'] == 'REPACK':
-                        c1,c2,c3,c4 = st.columns(4)
-                        lata = c1.number_input("Lata", 0)
-                        pet = c2.number_input("PET", 0)
-                        ow = c3.number_input("OW", 0)
-                        ln = c4.number_input("LN", 0)
-                        val_calc = (lata*0.10)+(pet*0.15)+(ow*0.20)+(ln*0.20)
-                    elif row['atividade'] in ATIVIDADES_POR_CARRO:
-                        qtd = st.number_input("Qtd Carros", 1.0)
-                        val_calc = float(row['valor']) * qtd
-                    elif row['atividade'] not in ATIVIDADES_POR_DIA:
-                        qtd = st.number_input("Qtd Paletes/Unid", 1.0)
-                        val_calc = float(row['valor']) * qtd
-                    
-                    st.write(f"**Valor Final:** {format_currency(val_calc)}")
-                    
-                    st.markdown("**📸 Foto Obrigatória para concluir**")
                     foto = st.file_uploader("Foto Evidência Final")
-                    
                     if st.form_submit_button("CONCLUIR"):
-                        if not foto:
-                            st.error("⚠️ Precisa anexar uma foto para finalizar!")
+                        if not foto: st.error("⚠️ Anexe uma foto!")
                         else:
-                            nome_safe = st.session_state['user_name'].replace(" ", "_").upper()
-                            atv_safe = row['atividade'].replace(" ", "_").replace("/", "-").replace("\\", "").upper()
-                            data_safe = datetime.now().strftime("%Y%m%d_%H%M%S")
                             ext = foto.name.split('.')[-1].lower()
-                            
-                            filename = f"{nome_safe}_{atv_safe}_{data_safe}_FINAL.{ext}"
-                            pth = f"{IMGS_PATH}/{filename}"
+                            # Usa a nova função de nomenclatura
+                            base_name = generate_media_name(st.session_state['user_name'], row['atividade'], row['sku_produto'], "FINAL")
+                            pth = f"{IMGS_PATH}/{base_name}.{ext}"
                             
                             with open(pth, "wb") as f: f.write(foto.getbuffer())
                             
+                            # Salva imagem no GitHub
+                            upload_media_to_github(pth)
+                            
                             update_task_safe(row['id_task'], {
-                                'status': 'Aguardando Aprovação',
-                                'qtd_produzida': qtd,
-                                'valor': val_calc,
-                                'evidencia_img': pth,
-                                'qtd_lata': lata, 'qtd_pet': pet, 'qtd_oneway': ow, 'qtd_longneck': ln,
-                                'fim_execucao': get_time_br().strftime(fmt_completo),
-                                'tempo_total_min': tempo_final 
+                                'status': 'Aguardando Aprovação', 'qtd_produzida': qtd, 'valor': val_calc,
+                                'evidencia_img': pth, 'fim_execucao': get_time_br().strftime("%Y-%m-%d %H:%M:%S"),
+                                'tempo_total_min': 5 
                             })
-                            if 'f_id' in st.session_state: del st.session_state['f_id']
-                            st.success("Tarefa entregue!")
-                            time.sleep(1)
+                            del st.session_state['f_id']
                             st.rerun()
 
 def interface_colaborador_auto(uid):
     st.title("🙋 Auto-Cadastro")
-    rules = get_data("rules")
-    users = get_data("users")
-    confs = users[users['tipo'].str.contains('CONFERENTE', case=False, na=False)]['nome'].tolist()
-    
-    ops = users[~users['tipo'].str.lower().str.contains('conferente', na=False)]['nome'].tolist()
-    
+    rules, users = get_data("rules"), get_data("users")
+    confs = users[users['tipo'].str.contains('CONFERENTE', na=False)]['nome'].tolist()
     colab_sel = st.selectbox("Quem aprova?", confs)
-    atv = st.selectbox("Atividade", rules['atividade'].tolist())
-
-    sku_resultado = "-"
-    if atv and ("REPACK" not in atv) and ("SELO VERMELHO" not in atv):
-        st.markdown("---")
-        sku_resultado = buscar_sku_interface_v2()
-        st.markdown("---")
-    else:
-        st.info("SKU não obrigatório.")
-        sku_resultado = "N/A"
+    atv = st.selectbox("Atividade", rules['atividade'].tolist() if not rules.empty else [])
+    sku_resultado = buscar_sku_interface_v2() if atv and "REPACK" not in atv and "SELO" not in atv else "N/A"
         
     with st.form("auto_c"):
         loc = st.text_input("Local")
         obs = st.text_area("Obs")
         foto_init = st.file_uploader("Foto Inicial (Opcional)")
         
-        if st.form_submit_button("CRIAR TAREFA"):
+        if st.form_submit_button("CRIAR"):
             if colab_sel and atv:
-                try:
-                    conf_id = users[users['nome'] == colab_sel].iloc[0]['id_login']
-                except:
-                    st.error("Conferente inválido")
-                    return
-
-                val = 0.0
-                val_lookup = rules.loc[rules['atividade'] == atv, 'valor']
-                if not val_lookup.empty: val = val_lookup.values[0]
-
-                path_init = ""
-                task_id = str(uuid.uuid4())
+                conf_id = users[users['nome'] == colab_sel].iloc[0]['id_login']
+                val = float(rules.loc[rules['atividade'] == atv, 'valor'].values[0]) if not rules.empty and not rules.loc[rules['atividade'] == atv].empty else 0.0
                 
+                path_init = ""
                 if foto_init:
                     ext = foto_init.name.split('.')[-1].lower()
-                    nome_safe = st.session_state['user_name'].replace(" ", "_").upper()
-                    atv_safe = atv.replace(" ", "_").replace("/", "-").replace("\\", "").upper()
-                    data_safe = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    # Usa a nova função de nomenclatura
+                    base_name = generate_media_name(st.session_state['user_name'], atv, sku_resultado, "AUTO_INICIAL")
+                    path_init = f"{IMGS_PATH}/{base_name}.{ext}"
+                    with open(path_init, "wb") as f: f.write(foto_init.getbuffer())
                     
-                    filename = f"{nome_safe}_{atv_safe}_{data_safe}_AUTO_INICIAL.{ext}"
-                    path_init = f"{IMGS_PATH}/{filename}"
-                    with open(path_init, "wb") as f:
-                        f.write(foto_init.getbuffer())
+                    # Salva imagem no GitHub
+                    upload_media_to_github(path_init)
 
-                task = {
-                    'id_task': task_id,
-                    'colaborador_id': str(uid),
-                    'conferente_id': str(conf_id),
-                    'atividade': atv, 'area': loc, 'descricao': obs,
-                    'sku_produto': sku_resultado, 'prioridade': 'Média', 'status': 'Pendente',
-                    'valor': float(val), 'data_criacao': get_time_br().strftime("%d/%m %H:%M"),
-                    'inicio_execucao': None, 'fim_execucao': None,
-                    'tempo_total_min': 0, 'obs_rejeicao': '',
-                    'qtd_lata': 0, 'qtd_pet': 0, 'qtd_oneway': 0, 'qtd_longneck': 0,
-                    'qtd_produzida': 0, 'evidencia_img': path_init
-                }
-                add_task_safe(task)
-                st.success("Auto-cadastro realizado!")
-            else:
-                st.error("Preencha os campos obrigatórios.")
+                add_task_safe({
+                    'id_task': str(uuid.uuid4()), 'colaborador_id': str(uid), 'conferente_id': str(conf_id),
+                    'atividade': atv, 'area': loc, 'descricao': obs, 'sku_produto': sku_resultado, 
+                    'prioridade': 'Média', 'status': 'Pendente', 'valor': val, 'data_criacao': get_time_br().strftime("%d/%m %H:%M"),
+                    'inicio_execucao': None, 'fim_execucao': None, 'tempo_total_min': 0, 'obs_rejeicao': '',
+                    'qtd_lata': 0, 'qtd_pet': 0, 'qtd_oneway': 0, 'qtd_longneck': 0, 'qtd_produzida': 0, 'evidencia_img': path_init
+                })
+                st.success("Criado!")
+                time.sleep(1)
+                st.rerun()
 
-# --- ROTEAMENTO E PERSISTÊNCIA ---
+# --- ROTEAMENTO ---
 if 'user_id' not in st.session_state:
-    if not restore_session():
-        login_screen()
-    else:
-        st.rerun()
+    if not restore_session(): login_screen()
+    else: st.rerun()
 else:
-    if 'uid' not in st.query_params:
-        st.query_params['uid'] = st.session_state['user_id']
-        
+    if 'uid' not in st.query_params: st.query_params['uid'] = st.session_state['user_id']
     r = st.session_state.get('role', 'Colaborador')
-    
     if r == 'Supervisor': interface_supervisor()
     elif r == 'Operador': interface_operador()
     elif r == 'Conferente': interface_conferente()
-    elif r == 'Colaborador': interface_operador()
-    else: 
-        do_logout()
+    else: interface_operador()
