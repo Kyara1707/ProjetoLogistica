@@ -1,1 +1,2 @@
-
+﻿id_task;colaborador_id;conferente_id;atividade;area;descricao;sku_produto;prioridade;status;valor;data_criacao;inicio_execucao;fim_execucao;tempo_total_min;obs_rejeicao;qtd_lata;qtd_pet;qtd_oneway;qtd_longneck;qtd_produzida;evidencia_img
+f9574c7f-62e6-4045-95bd-ab9b0b1aeabd;12345678;05471598;BLITZ (EMPURRADA);9259;jjj;504 - 	PEPSI COLA PET 2L CAIXA C/6;Baixa;Pendente;1.5;11/03 18:40;;;0;;0;0;0;0;0;images/f9574c7f-62e6-4045-95bd-ab9b0b1aeabd_INICIAL.png
