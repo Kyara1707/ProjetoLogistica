@@ -4,6 +4,7 @@ import os
 from datetime import datetime, timedelta
 import time
 import uuid
+from streamlit_gsheets import GSheetsConnection
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="ProTrack Logística", layout="wide", page_icon="🚛")
@@ -30,7 +31,7 @@ st.markdown("""
         text-align: center;
         box-shadow: 2px 2px 5px rgba(0,0,0,0.05);
     }
-    /* Esconde botão fullscreen para evitar toques acidentais em mobile */
+    /* Esconde botão fullscreen para evitar toques acidentais no telemóvel */
     button[title="View fullscreen"] {
         display: none;
     }
@@ -44,34 +45,9 @@ ATIVIDADES_POR_DIA = ["MÁQUINA LIMPEZA", "5S MARIA MOLE", "5S PICKING/ABASTECIM
 SUPERVISORES_PERMITIDOS = ['99849441', '99813623', '99797465']
 LIMITE_RV_OPERADOR = 380.00  
 
-# Tabela de preços fixa
-NOVAS_REGRAS = [
-    {"atividade": "SELO VERMELHO (T/M)", "valor": 1.25},
-    {"atividade": "SELO VERMELHO (B/V)", "valor": 1.50},
-    {"atividade": "AMARRAÇÃO", "valor": 3.00},
-    {"atividade": "REFUGO", "valor": 0.90},
-    {"atividade": "BLITZ (EMPURRADA)", "valor": 1.50},
-    {"atividade": "BLITZ (CARREG)", "valor": 1.50},
-    {"atividade": "BLITZ (RETORNO)", "valor": 1.50},
-    {"atividade": "REPACK", "valor": 0.00},
-    {"atividade": "DEVOLUÇÃO", "valor": 1.25},
-    {"atividade": "TRANSBORDO", "valor": 1.50},
-    {"atividade": "TRIAGEM AVARIAS ARMAZÉM D", "valor": 1.25},
-    {"atividade": "PRÉ PICKING MKT PLACE (DESTILADOS)", "valor": 2.00},
-    {"atividade": "PRÉ PICKING MKT PLACE (REDBULL)", "valor": 1.50},
-    {"atividade": "CÂMARA FRIA", "valor": 3.00},
-    {"atividade": "MÁQUINA LIMPEZA", "valor": 5.00},
-    {"atividade": "5S MARIA MOLE", "valor": 14.50},
-    {"atividade": "5S PICKING/ABASTECIMENTO", "valor": 14.50},
-    {"atividade": "DESCARREGAMENTO DE VAN", "valor": 2.00},
-    {"atividade": "EFC", "valor": 3.85},
-    {"atividade": "TMA", "valor": 7.70},
-    {"atividade": "FEFO", "valor": 3.85}
-]
-
-FILES_PATH = "data"
+# Apenas as imagens continuam a ser guardadas na máquina temporária. 
+# (Nota: imagens ainda se vão perder nos reboots, precisaremos de cloud storage futuro)
 IMGS_PATH = "images"
-os.makedirs(FILES_PATH, exist_ok=True)
 os.makedirs(IMGS_PATH, exist_ok=True)
 
 def format_currency(value):
@@ -79,42 +55,28 @@ def format_currency(value):
     except: return "R$ 0,00"
 
 def get_time_br():
-    # Ajuste simples para horário Brasil (UTC-3)
+    # Ajuste simples para fuso horário de Brasília/Recife (UTC-3)
     return datetime.utcnow() - timedelta(hours=3)
 
-# --- GERENCIAMENTO DE DADOS ---
-def init_data():
-    if not os.path.exists(f"{FILES_PATH}/rules.csv"):
-        df_regras = pd.DataFrame(NOVAS_REGRAS)
-        df_regras.to_csv(f"{FILES_PATH}/rules.csv", index=False, sep=';', encoding='utf-8-sig')
-    
-    if not os.path.exists(f"{FILES_PATH}/users.csv"):
-        pd.DataFrame(columns=['nome', 'id_login', 'tipo', 'rv_acumulada']).to_csv(f"{FILES_PATH}/users.csv", sep=';', index=False, encoding='utf-8-sig')
-    
-    if not os.path.exists(f"{FILES_PATH}/tasks.csv"):
-        cols = ['id_task', 'colaborador_id', 'conferente_id', 'atividade', 'area', 'descricao', 
-                'sku_produto', 'prioridade', 'status', 'valor', 'data_criacao', 'inicio_execucao', 
-                'fim_execucao', 'tempo_total_min', 'obs_rejeicao', 'qtd_lata', 'qtd_pet', 
-                'qtd_oneway', 'qtd_longneck', 'qtd_produzida', 'evidencia_img']
-        pd.DataFrame(columns=cols).to_csv(f"{FILES_PATH}/tasks.csv", sep=';', index=False, encoding='utf-8-sig')
-
-    if not os.path.exists(f"{FILES_PATH}/sku.csv"):
-        pd.DataFrame(columns=['codigo', 'descricao']).to_csv(f"{FILES_PATH}/sku.csv", sep=';', index=False, encoding='utf-8-sig')
-
-init_data()
+# --- GERENCIAMENTO DE DADOS (VIA GOOGLE SHEETS) ---
 
 def get_data(filename):
-    path = f"{FILES_PATH}/{filename}.csv"
-    if not os.path.exists(path):
-        init_data()
-        if not os.path.exists(path): return pd.DataFrame()
-
+    """Lê os dados diretamente do separador correspondente no Google Sheets."""
     try:
-        try:
-            df = pd.read_csv(path, sep=';', encoding='utf-8-sig', dtype=str)
-        except UnicodeDecodeError:
-            df = pd.read_csv(path, sep=';', encoding='latin1', dtype=str)
+        # Cria a ligação ao Google Sheets
+        conn = st.connection("gsheets", type=GSheetsConnection)
         
+        # O filename (ex: 'tasks') deve ser o nome exato do separador na sua folha de cálculo
+        # ttl=0 garante que ele não usa a cache e procura sempre os dados mais recentes
+        df = conn.read(worksheet=filename, ttl=0)
+        
+        # Garante que valores em branco não causam erros
+        df = df.fillna("")
+        
+        # Converte tudo para string para simular o comportamento de ler do CSV original
+        df = df.astype(str)
+        
+        # Aplica conversões e lida com ficheiros que possam estar totalmente vazios
         if filename == 'tasks':
             required = ['id_task', 'colaborador_id', 'status', 'valor', 'atividade']
             if df.empty or not all(c in df.columns for c in required):
@@ -128,19 +90,33 @@ def get_data(filename):
             df['tempo_total_min'] = pd.to_numeric(df['tempo_total_min'], errors='coerce').fillna(0.0)
             
         elif filename == 'users':
-            if 'rv_acumulada' not in df.columns: df['rv_acumulada'] = 0.0
-            df['rv_acumulada'] = pd.to_numeric(df['rv_acumulada'].astype(str).str.replace(',', '.'), errors='coerce').fillna(0.0)
+            if df.empty or 'id_login' not in df.columns:
+                return pd.DataFrame(columns=['nome', 'id_login', 'tipo', 'rv_acumulada'])
+            if 'rv_acumulada' not in df.columns: df['rv_acumulada'] = '0.0'
+            df['rv_acumulada'] = pd.to_numeric(df['rv_acumulada'].str.replace(',', '.'), errors='coerce').fillna(0.0)
             
         elif filename == 'rules':
+            if df.empty or 'atividade' not in df.columns:
+                return pd.DataFrame(columns=['atividade', 'valor'])
             df['valor'] = pd.to_numeric(df['valor'], errors='coerce').fillna(0.0)
-            
+
+        elif filename == 'sku':
+            if df.empty:
+                return pd.DataFrame(columns=['codigo', 'descricao'])
+                
         return df
     except Exception as e:
+        st.error(f"Erro ao carregar '{filename}'. Verifique se o separador existe no Google Sheets e se os Secrets estão corretos. Detalhe: {e}")
         return pd.DataFrame()
 
 def save_data(df, filename):
-    try: df.to_csv(f"{FILES_PATH}/{filename}.csv", index=False, sep=';', encoding='utf-8-sig')
-    except: st.error(f"Erro ao salvar {filename}. Feche o arquivo se estiver aberto.")
+    """Atualiza os dados de volta para o separador do Google Sheets."""
+    try:
+        conn = st.connection("gsheets", type=GSheetsConnection)
+        # Substitui os dados da folha pelo DataFrame mais atualizado
+        conn.update(worksheet=filename, data=df)
+    except Exception as e:
+        st.error(f"Erro ao tentar guardar dados na folha '{filename}': {e}")
 
 def add_task_safe(task_dict):
     df = get_data("tasks")
@@ -225,12 +201,11 @@ def restore_session():
             return True
     return False
 
-# --- TELA DE REGRAS (NOVA) ---
+# --- TELA DE REGRAS ---
 def interface_regras():
     st.title("📜 Regras & Valores das Atividades")
     rules = get_data("rules")
     if not rules.empty:
-        # Prepara tabela bonita
         df_show = rules.copy()
         df_show = df_show[['atividade', 'valor']]
         df_show.columns = ['Atividade', 'Valor Unitário']
@@ -238,7 +213,7 @@ def interface_regras():
         df_show = df_show.sort_values('Atividade')
         st.dataframe(df_show, use_container_width=True, hide_index=True)
     else:
-        st.warning("Tabela de regras vazia.")
+        st.warning("Tabela de regras vazia ou não criada no Google Sheets.")
 
 # --- TELAS DO SISTEMA ---
 def login_screen():
@@ -250,7 +225,7 @@ def login_screen():
         if st.button("ENTRAR"):
             users = get_data("users")
             if users.empty:
-                st.error("Arquivo de usuários vazio ou não encontrado.")
+                st.error("Base de utilizadores vazia no Google Sheets.")
                 return
 
             user = users[users['id_login'].astype(str) == lid]
@@ -258,7 +233,7 @@ def login_screen():
                 st.query_params["uid"] = str(user.iloc[0]['id_login'])
                 time.sleep(0.1)
                 st.rerun()
-            else: st.error("Usuário não cadastrado.")
+            else: st.error("Utilizador não cadastrado.")
 
 def interface_supervisor():
     st.sidebar.header(f"👮 {st.session_state.get('user_name', 'Sup')}")
@@ -468,7 +443,7 @@ def interface_operador():
             c3.metric("⭐ Status", "Ativo") 
 
         if saldo_real > LIMITE_RV_OPERADOR:
-            st.warning(f"🔒 Teto de RV atingido! Seu acumulado real é {format_currency(saldo_real)}, mas o pagamento é limitado a {format_currency(LIMITE_RV_OPERADOR)}.")
+            st.warning(f"🔒 Teto de RV atingido! O seu acumulado real é {format_currency(saldo_real)}, mas o pagamento é limitado a {format_currency(LIMITE_RV_OPERADOR)}.")
 
         st.subheader("Histórico Recente")
         if not tasks.empty:
@@ -522,10 +497,8 @@ def interface_conferente():
                     path_evidencia = ""
                     task_id_new = str(uuid.uuid4())
                     
-                    # --- NOMEAÇÃO DA FOTO INICIAL (CONFERENTE) ---
                     if foto_upload:
                         ext = foto_upload.name.split('.')[-1].lower()
-                        # Formato: NOME_ATIVIDADE_DATA_INICIAL
                         nome_safe = colab.replace(" ", "_").upper()
                         atv_safe = atv.replace(" ", "_").replace("/", "-").replace("\\", "").upper()
                         data_safe = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -592,7 +565,7 @@ def interface_conferente():
                                 try: c2.image(row['evidencia_img'], width=200, caption="Evidência")
                                 except: c2.error("Erro ao carregar imagem")
                         else:
-                            c2.warning("Arquivo não encontrado no servidor.")
+                            c2.warning("Ficheiro de imagem/vídeo não encontrado.")
                     
                     b1, b2 = st.columns(2)
                     if b1.button("✅ Aprovar", key=k_approve):
@@ -703,10 +676,8 @@ def interface_colaborador_tarefas(uid):
                     
                     if st.form_submit_button("CONCLUIR"):
                         if not foto:
-                            st.error("⚠️ Você precisa anexar uma foto para finalizar!")
+                            st.error("⚠️ Precisa anexar uma foto para finalizar!")
                         else:
-                            # --- NOMEAÇÃO DA FOTO FINAL (OPERADOR) ---
-                            # Formato: NOME_ATIVIDADE_DATA_FINAL
                             nome_safe = st.session_state['user_name'].replace(" ", "_").upper()
                             atv_safe = row['atividade'].replace(" ", "_").replace("/", "-").replace("\\", "").upper()
                             data_safe = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -771,10 +742,8 @@ def interface_colaborador_auto(uid):
                 path_init = ""
                 task_id = str(uuid.uuid4())
                 
-                # --- NOMEAÇÃO DA FOTO AUTO-CADASTRO ---
                 if foto_init:
                     ext = foto_init.name.split('.')[-1].lower()
-                    # Formato: NOME_ATIVIDADE_DATA_AUTO_INICIAL
                     nome_safe = st.session_state['user_name'].replace(" ", "_").upper()
                     atv_safe = atv.replace(" ", "_").replace("/", "-").replace("\\", "").upper()
                     data_safe = datetime.now().strftime("%Y%m%d_%H%M%S")
