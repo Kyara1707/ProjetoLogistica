@@ -137,7 +137,7 @@ def init_data():
         pd.DataFrame(columns=['codigo', 'descricao']).to_csv(f"{FILES_PATH}/sku.csv", sep=';', index=False, encoding='utf-8-sig')
 
 def get_data(filename):
-    sync_from_github(filename) # Passo NOVO: Puxa do GitHub antes de ler
+    sync_from_github(filename) # Puxa do GitHub antes de ler
     path = f"{FILES_PATH}/{filename}.csv"
     
     if not os.path.exists(path):
@@ -177,7 +177,7 @@ def save_data(df, filename):
     try: 
         # Guarda na máquina virtual primeiro
         df.to_csv(f"{FILES_PATH}/{filename}.csv", index=False, sep=';', encoding='utf-8-sig')
-        # Passo NOVO: Faz logo o upload para o GitHub!
+        # Faz logo o upload para o GitHub!
         save_to_github(filename)
     except Exception as e: 
         st.error(f"Erro ao guardar {filename}.")
@@ -265,6 +265,20 @@ def restore_session():
             return True
     return False
 
+# --- TELA DE REGRAS ---
+def interface_regras():
+    st.title("📜 Regras & Valores das Atividades")
+    rules = get_data("rules")
+    if not rules.empty:
+        df_show = rules.copy()
+        df_show = df_show[['atividade', 'valor']]
+        df_show.columns = ['Atividade', 'Valor Unitário']
+        df_show['Valor Unitário'] = df_show['Valor Unitário'].apply(format_currency)
+        df_show = df_show.sort_values('Atividade')
+        st.dataframe(df_show, use_container_width=True, hide_index=True)
+    else:
+        st.warning("Tabela de regras vazia.")
+
 # --- TELAS DO SISTEMA ---
 def login_screen():
     st.markdown("<h1 style='text-align: center; color: #0054a6;'>ProTrack Logística 🚛</h1>", unsafe_allow_html=True)
@@ -287,9 +301,10 @@ def login_screen():
 
 def interface_supervisor():
     st.sidebar.header(f"👮 {st.session_state.get('user_name', 'Sup')}")
-    menu = st.sidebar.radio("Menu", ["Validar KPIs", "Ajustes Financeiros", "Ranking", "Sair"])
+    menu = st.sidebar.radio("Menu", ["Validar KPIs", "Ajustes Financeiros", "Ranking", "Regras & Valores", "Sair"])
     
     if menu == "Sair": do_logout()
+    elif menu == "Regras & Valores": interface_regras()
     
     users = get_data("users")
     rules = get_data("rules")
@@ -392,7 +407,7 @@ def interface_operador():
 
     st.sidebar.header(f"👷 {st.session_state['user_name']}")
     
-    opcoes_menu = ["Tarefas", "Auto-Cadastro", "Dashboard", "Sair"]
+    opcoes_menu = ["Tarefas", "Auto-Cadastro", "Dashboard", "Regras & Valores", "Sair"]
     
     if st.session_state.get('role') == 'Operador':
         opcoes_menu.insert(0, "🚀 KPIs Diários")
@@ -401,6 +416,7 @@ def interface_operador():
     uid = st.session_state['user_id']
     
     if menu == "Sair": do_logout()
+    elif menu == "Regras & Valores": interface_regras()
 
     if menu == "🚀 KPIs Diários" and st.session_state.get('role') == 'Operador':
         st.title("🚀 Metas do Dia")
@@ -500,12 +516,13 @@ def interface_operador():
 
 def interface_conferente():
     st.sidebar.header(f"👤 {st.session_state.get('user_name', 'Conf')}")
-    menu = st.sidebar.radio("Menu", ["Criar Tarefa", "Aprovar Tarefas", "Sair"])
+    menu = st.sidebar.radio("Menu", ["Criar Tarefa", "Aprovar Tarefas", "Regras & Valores", "Sair"])
     users = get_data("users")
     tasks = get_data("tasks")
     rules = get_data("rules")
 
     if menu == "Sair": do_logout()
+    elif menu == "Regras & Valores": interface_regras()
 
     elif menu == "Criar Tarefa":
         st.title("📋 Nova Atividade")
