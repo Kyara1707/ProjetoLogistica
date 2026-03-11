@@ -1,5 +1,4 @@
 streamlit
 pandas
 PyGithub
-gspread
-oauth2client
+st-gsheets-connection
