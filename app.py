@@ -4,7 +4,7 @@ import os
 from datetime import datetime, timedelta
 import time
 import uuid
-from streamlit_gsheets import GSheetsConnection
+from github import Github # Biblioteca que fará o envio para o GitHub
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="ProTrack Logística", layout="wide", page_icon="🚛")
@@ -31,7 +31,6 @@ st.markdown("""
         text-align: center;
         box-shadow: 2px 2px 5px rgba(0,0,0,0.05);
     }
-    /* Esconde botão fullscreen para evitar toques acidentais no telemóvel */
     button[title="View fullscreen"] {
         display: none;
     }
@@ -45,9 +44,33 @@ ATIVIDADES_POR_DIA = ["MÁQUINA LIMPEZA", "5S MARIA MOLE", "5S PICKING/ABASTECIM
 SUPERVISORES_PERMITIDOS = ['99849441', '99813623', '99797465']
 LIMITE_RV_OPERADOR = 380.00  
 
-# Apenas as imagens continuam a ser guardadas na máquina temporária. 
-# (Nota: imagens ainda se vão perder nos reboots, precisaremos de cloud storage futuro)
+NOVAS_REGRAS = [
+    {"atividade": "SELO VERMELHO (T/M)", "valor": 1.25},
+    {"atividade": "SELO VERMELHO (B/V)", "valor": 1.50},
+    {"atividade": "AMARRAÇÃO", "valor": 3.00},
+    {"atividade": "REFUGO", "valor": 0.90},
+    {"atividade": "BLITZ (EMPURRADA)", "valor": 1.50},
+    {"atividade": "BLITZ (CARREG)", "valor": 1.50},
+    {"atividade": "BLITZ (RETORNO)", "valor": 1.50},
+    {"atividade": "REPACK", "valor": 0.00},
+    {"atividade": "DEVOLUÇÃO", "valor": 1.25},
+    {"atividade": "TRANSBORDO", "valor": 1.50},
+    {"atividade": "TRIAGEM AVARIAS ARMAZÉM D", "valor": 1.25},
+    {"atividade": "PRÉ PICKING MKT PLACE (DESTILADOS)", "valor": 2.00},
+    {"atividade": "PRÉ PICKING MKT PLACE (REDBULL)", "valor": 1.50},
+    {"atividade": "CÂMARA FRIA", "valor": 3.00},
+    {"atividade": "MÁQUINA LIMPEZA", "valor": 5.00},
+    {"atividade": "5S MARIA MOLE", "valor": 14.50},
+    {"atividade": "5S PICKING/ABASTECIMENTO", "valor": 14.50},
+    {"atividade": "DESCARREGAMENTO DE VAN", "valor": 2.00},
+    {"atividade": "EFC", "valor": 3.85},
+    {"atividade": "TMA", "valor": 7.70},
+    {"atividade": "FEFO", "valor": 3.85}
+]
+
+FILES_PATH = "data"
 IMGS_PATH = "images"
+os.makedirs(FILES_PATH, exist_ok=True)
 os.makedirs(IMGS_PATH, exist_ok=True)
 
 def format_currency(value):
@@ -55,28 +78,78 @@ def format_currency(value):
     except: return "R$ 0,00"
 
 def get_time_br():
-    # Ajuste simples para fuso horário de Brasília/Recife (UTC-3)
     return datetime.utcnow() - timedelta(hours=3)
 
-# --- GERENCIAMENTO DE DADOS (VIA GOOGLE SHEETS) ---
+# --- INTEGRAÇÃO DIRETA COM O GITHUB ---
+
+def get_github_repo():
+    """Autentica com o GitHub usando os Segredos configurados no Streamlit"""
+    if "GITHUB_TOKEN" in st.secrets and "GITHUB_REPO" in st.secrets:
+        g = Github(st.secrets["GITHUB_TOKEN"])
+        return g.get_repo(st.secrets["GITHUB_REPO"])
+    return None
+
+def sync_from_github(filename):
+    """Sincroniza o ficheiro do GitHub para o Streamlit (Traz os dados mais recentes)"""
+    try:
+        repo = get_github_repo()
+        if repo:
+            contents = repo.get_contents(f"{FILES_PATH}/{filename}.csv")
+            with open(f"{FILES_PATH}/{filename}.csv", "wb") as f:
+                f.write(contents.decoded_content)
+    except Exception:
+        pass # Ignora se for a primeira vez e o ficheiro ainda não existir no GitHub
+
+def save_to_github(filename):
+    """Envia o ficheiro CSV guardado pelo Streamlit de volta para o GitHub"""
+    try:
+        repo = get_github_repo()
+        if repo:
+            file_path = f"{FILES_PATH}/{filename}.csv"
+            with open(file_path, "rb") as f:
+                content = f.read()
+            try:
+                contents = repo.get_contents(file_path)
+                repo.update_file(contents.path, f"App: Atualizou {filename}", content, contents.sha)
+            except Exception:
+                repo.create_file(file_path, f"App: Criou {filename}", content)
+    except Exception as e:
+        st.error(f"Erro na sincronização com o GitHub: {e}")
+
+# --- GERENCIAMENTO DE DADOS (COM SINCRONIZAÇÃO GITHUB) ---
+
+def init_data():
+    if not os.path.exists(f"{FILES_PATH}/rules.csv"):
+        df_regras = pd.DataFrame(NOVAS_REGRAS)
+        df_regras.to_csv(f"{FILES_PATH}/rules.csv", index=False, sep=';', encoding='utf-8-sig')
+    
+    if not os.path.exists(f"{FILES_PATH}/users.csv"):
+        pd.DataFrame(columns=['nome', 'id_login', 'tipo', 'rv_acumulada']).to_csv(f"{FILES_PATH}/users.csv", sep=';', index=False, encoding='utf-8-sig')
+    
+    if not os.path.exists(f"{FILES_PATH}/tasks.csv"):
+        cols = ['id_task', 'colaborador_id', 'conferente_id', 'atividade', 'area', 'descricao', 
+                'sku_produto', 'prioridade', 'status', 'valor', 'data_criacao', 'inicio_execucao', 
+                'fim_execucao', 'tempo_total_min', 'obs_rejeicao', 'qtd_lata', 'qtd_pet', 
+                'qtd_oneway', 'qtd_longneck', 'qtd_produzida', 'evidencia_img']
+        pd.DataFrame(columns=cols).to_csv(f"{FILES_PATH}/tasks.csv", sep=';', index=False, encoding='utf-8-sig')
+
+    if not os.path.exists(f"{FILES_PATH}/sku.csv"):
+        pd.DataFrame(columns=['codigo', 'descricao']).to_csv(f"{FILES_PATH}/sku.csv", sep=';', index=False, encoding='utf-8-sig')
 
 def get_data(filename):
-    """Lê os dados diretamente do separador correspondente no Google Sheets."""
+    sync_from_github(filename) # Passo NOVO: Puxa do GitHub antes de ler
+    path = f"{FILES_PATH}/{filename}.csv"
+    
+    if not os.path.exists(path):
+        init_data()
+        if not os.path.exists(path): return pd.DataFrame()
+
     try:
-        # Cria a ligação ao Google Sheets
-        conn = st.connection("gsheets", type=GSheetsConnection)
+        try:
+            df = pd.read_csv(path, sep=';', encoding='utf-8-sig', dtype=str)
+        except UnicodeDecodeError:
+            df = pd.read_csv(path, sep=';', encoding='latin1', dtype=str)
         
-        # O filename (ex: 'tasks') deve ser o nome exato do separador na sua folha de cálculo
-        # ttl=0 garante que ele não usa a cache e procura sempre os dados mais recentes
-        df = conn.read(worksheet=filename, ttl=0)
-        
-        # Garante que valores em branco não causam erros
-        df = df.fillna("")
-        
-        # Converte tudo para string para simular o comportamento de ler do CSV original
-        df = df.astype(str)
-        
-        # Aplica conversões e lida com ficheiros que possam estar totalmente vazios
         if filename == 'tasks':
             required = ['id_task', 'colaborador_id', 'status', 'valor', 'atividade']
             if df.empty or not all(c in df.columns for c in required):
@@ -90,33 +163,24 @@ def get_data(filename):
             df['tempo_total_min'] = pd.to_numeric(df['tempo_total_min'], errors='coerce').fillna(0.0)
             
         elif filename == 'users':
-            if df.empty or 'id_login' not in df.columns:
-                return pd.DataFrame(columns=['nome', 'id_login', 'tipo', 'rv_acumulada'])
-            if 'rv_acumulada' not in df.columns: df['rv_acumulada'] = '0.0'
-            df['rv_acumulada'] = pd.to_numeric(df['rv_acumulada'].str.replace(',', '.'), errors='coerce').fillna(0.0)
+            if 'rv_acumulada' not in df.columns: df['rv_acumulada'] = 0.0
+            df['rv_acumulada'] = pd.to_numeric(df['rv_acumulada'].astype(str).str.replace(',', '.'), errors='coerce').fillna(0.0)
             
         elif filename == 'rules':
-            if df.empty or 'atividade' not in df.columns:
-                return pd.DataFrame(columns=['atividade', 'valor'])
             df['valor'] = pd.to_numeric(df['valor'], errors='coerce').fillna(0.0)
-
-        elif filename == 'sku':
-            if df.empty:
-                return pd.DataFrame(columns=['codigo', 'descricao'])
-                
+            
         return df
     except Exception as e:
-        st.error(f"Erro ao carregar '{filename}'. Verifique se o separador existe no Google Sheets e se os Secrets estão corretos. Detalhe: {e}")
         return pd.DataFrame()
 
 def save_data(df, filename):
-    """Atualiza os dados de volta para o separador do Google Sheets."""
-    try:
-        conn = st.connection("gsheets", type=GSheetsConnection)
-        # Substitui os dados da folha pelo DataFrame mais atualizado
-        conn.update(worksheet=filename, data=df)
-    except Exception as e:
-        st.error(f"Erro ao tentar guardar dados na folha '{filename}': {e}")
+    try: 
+        # Guarda na máquina virtual primeiro
+        df.to_csv(f"{FILES_PATH}/{filename}.csv", index=False, sep=';', encoding='utf-8-sig')
+        # Passo NOVO: Faz logo o upload para o GitHub!
+        save_to_github(filename)
+    except Exception as e: 
+        st.error(f"Erro ao guardar {filename}.")
 
 def add_task_safe(task_dict):
     df = get_data("tasks")
@@ -154,7 +218,7 @@ def buscar_sku_interface_v2():
     opcoes = df_sku['display'].tolist()
     
     st.write("Pesquise o Material:")
-    escolha = st.selectbox("Selecione o Produto (Digite para buscar)", [""] + opcoes)
+    escolha = st.selectbox("Selecione o Produto (Escreva para buscar)", [""] + opcoes)
     
     codigo_travado = ""
     nome_produto = "-"
@@ -201,31 +265,17 @@ def restore_session():
             return True
     return False
 
-# --- TELA DE REGRAS ---
-def interface_regras():
-    st.title("📜 Regras & Valores das Atividades")
-    rules = get_data("rules")
-    if not rules.empty:
-        df_show = rules.copy()
-        df_show = df_show[['atividade', 'valor']]
-        df_show.columns = ['Atividade', 'Valor Unitário']
-        df_show['Valor Unitário'] = df_show['Valor Unitário'].apply(format_currency)
-        df_show = df_show.sort_values('Atividade')
-        st.dataframe(df_show, use_container_width=True, hide_index=True)
-    else:
-        st.warning("Tabela de regras vazia ou não criada no Google Sheets.")
-
 # --- TELAS DO SISTEMA ---
 def login_screen():
     st.markdown("<h1 style='text-align: center; color: #0054a6;'>ProTrack Logística 🚛</h1>", unsafe_allow_html=True)
     col1, col2, col3 = st.columns([1,2,1])
     with col2:
-        st.info("Insira seu ID ou Matrícula")
+        st.info("Insira o seu ID ou Matrícula")
         lid = st.text_input("ID").strip()
         if st.button("ENTRAR"):
             users = get_data("users")
             if users.empty:
-                st.error("Base de utilizadores vazia no Google Sheets.")
+                st.error("Ficheiro de utilizadores vazio ou não encontrado.")
                 return
 
             user = users[users['id_login'].astype(str) == lid]
@@ -237,10 +287,9 @@ def login_screen():
 
 def interface_supervisor():
     st.sidebar.header(f"👮 {st.session_state.get('user_name', 'Sup')}")
-    menu = st.sidebar.radio("Menu", ["Validar KPIs", "Ajustes Financeiros", "Ranking", "Regras & Valores", "Sair"])
+    menu = st.sidebar.radio("Menu", ["Validar KPIs", "Ajustes Financeiros", "Ranking", "Sair"])
     
     if menu == "Sair": do_logout()
-    elif menu == "Regras & Valores": interface_regras()
     
     users = get_data("users")
     rules = get_data("rules")
@@ -297,7 +346,7 @@ def interface_supervisor():
             colab = st.selectbox("Colaborador", ops)
             tipo = st.radio("Tipo de Ajuste", ["Crédito (+)", "Débito (-)"], horizontal=True)
             valor = st.number_input("Valor (R$)", min_value=0.0, step=0.5)
-            motivo = st.text_input("Motivo (Ex: Bônus Meta Semanal, Quebra de Material)")
+            motivo = st.text_input("Motivo (Ex: Bónus Meta Semanal, Quebra de Material)")
             
             if st.form_submit_button("PROCESSAR AJUSTE"):
                 if valor > 0 and motivo:
@@ -323,12 +372,12 @@ def interface_supervisor():
                             'qtd_produzida': 0, 'evidencia_img': ""
                         }
                         add_task_safe(task)
-                        st.success(f"Sucesso! Ajuste de {format_currency(valor_final)} realizado.")
+                        st.success(f"Sucesso! Ajuste de {format_currency(valor_final)} efetuado.")
                         time.sleep(1)
                         st.rerun()
                     else: st.error("Erro ao atualizar saldo.")
                 else:
-                    st.warning("Insira valor e motivo.")
+                    st.warning("Insira o valor e o motivo.")
 
     elif menu == "Ranking":
         st.title("🏆 Ranking Geral")
@@ -343,7 +392,7 @@ def interface_operador():
 
     st.sidebar.header(f"👷 {st.session_state['user_name']}")
     
-    opcoes_menu = ["Tarefas", "Auto-Cadastro", "Dashboard", "Regras & Valores", "Sair"]
+    opcoes_menu = ["Tarefas", "Auto-Cadastro", "Dashboard", "Sair"]
     
     if st.session_state.get('role') == 'Operador':
         opcoes_menu.insert(0, "🚀 KPIs Diários")
@@ -352,7 +401,6 @@ def interface_operador():
     uid = st.session_state['user_id']
     
     if menu == "Sair": do_logout()
-    elif menu == "Regras & Valores": interface_regras()
 
     if menu == "🚀 KPIs Diários" and st.session_state.get('role') == 'Operador':
         st.title("🚀 Metas do Dia")
@@ -375,7 +423,7 @@ def interface_operador():
             ja_fez = not tasks[(tasks['colaborador_id']==uid) & (tasks['data_criacao'].str.contains(hoje)) & (tasks['atividade'].isin(['EFC','TMA']))].empty
         
         if ja_fez:
-            st.info("✅ KPIs de hoje já enviados e aguardando validação.")
+            st.info("✅ KPIs de hoje já enviados e aguardam validação.")
         else:
             with st.form("kpi_form"):
                 st.write("Marque as metas batidas:")
@@ -415,7 +463,7 @@ def interface_operador():
         interface_colaborador_auto(uid)
         
     elif menu == "Dashboard":
-        st.title("📊 Seu Desempenho")
+        st.title("📊 O Seu Desempenho")
         users = get_data("users")
         meu_saldo = users[users['id_login'].astype(str) == uid]['rv_acumulada'].values
         saldo_real = float(meu_saldo[0]) if len(meu_saldo) > 0 else 0.0
@@ -452,13 +500,12 @@ def interface_operador():
 
 def interface_conferente():
     st.sidebar.header(f"👤 {st.session_state.get('user_name', 'Conf')}")
-    menu = st.sidebar.radio("Menu", ["Criar Tarefa", "Aprovar Tarefas", "Regras & Valores", "Sair"])
+    menu = st.sidebar.radio("Menu", ["Criar Tarefa", "Aprovar Tarefas", "Sair"])
     users = get_data("users")
     tasks = get_data("tasks")
     rules = get_data("rules")
 
     if menu == "Sair": do_logout()
-    elif menu == "Regras & Valores": interface_regras()
 
     elif menu == "Criar Tarefa":
         st.title("📋 Nova Atividade")
@@ -499,13 +546,7 @@ def interface_conferente():
                     
                     if foto_upload:
                         ext = foto_upload.name.split('.')[-1].lower()
-                        nome_safe = colab.replace(" ", "_").upper()
-                        atv_safe = atv.replace(" ", "_").replace("/", "-").replace("\\", "").upper()
-                        data_safe = datetime.now().strftime("%Y%m%d_%H%M%S")
-                        
-                        filename = f"{nome_safe}_{atv_safe}_{data_safe}_INICIAL.{ext}"
-                        path_evidencia = f"{IMGS_PATH}/{filename}"
-                        
+                        path_evidencia = f"{IMGS_PATH}/{task_id_new}_INICIAL.{ext}"
                         with open(path_evidencia, "wb") as f:
                             f.write(foto_upload.getbuffer())
 
@@ -565,7 +606,7 @@ def interface_conferente():
                                 try: c2.image(row['evidencia_img'], width=200, caption="Evidência")
                                 except: c2.error("Erro ao carregar imagem")
                         else:
-                            c2.warning("Ficheiro de imagem/vídeo não encontrado.")
+                            c2.warning("Ficheiro não encontrado no servidor.")
                     
                     b1, b2 = st.columns(2)
                     if b1.button("✅ Aprovar", key=k_approve):
