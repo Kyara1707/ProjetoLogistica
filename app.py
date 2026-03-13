@@ -4,6 +4,7 @@ import os
 from datetime import datetime, timedelta
 import time
 import uuid
+from github import Github # <-- ADICIONADO NOVAMENTE PARA AS IMAGENS
 
 # --- NOVAS IMPORTAÇÕES PARA O GOOGLE DRIVE ---
 from google.oauth2 import service_account
@@ -151,63 +152,37 @@ def save_to_drive(filename):
     except Exception as e:
         st.error(f"Erro na sincronização CSV com o Drive: {e}")
 
-# --- FUNÇÕES DE IMAGEM PARA O GOOGLE DRIVE ---
+# --- FUNÇÕES DE IMAGEM PARA O GITHUB (RETORNADAS) ---
 
-def upload_media_to_drive(file_path):
-    """Salva as imagens/vídeos na pasta de images do Google Drive"""
+def get_github_repo():
+    """Autentica com o GitHub para salvar as imagens"""
+    if "GITHUB_TOKEN" in st.secrets and "GITHUB_REPO" in st.secrets:
+        g = Github(st.secrets["GITHUB_TOKEN"])
+        return g.get_repo(st.secrets["GITHUB_REPO"])
+    return None
+
+def upload_media_to_github(file_path):
+    """Nova função exclusiva para salvar as imagens/vídeos no GitHub"""
     try:
-        service = get_drive_service()
-        if not service: return
-        
-        folder_id = st.secrets.get("DRIVE_FOLDER_IMAGES_ID", "")
-        if not folder_id: return
-        
-        filename = os.path.basename(file_path)
-
-        mime_type, _ = mimetypes.guess_type(file_path)
-        if mime_type is None:
-            mime_type = 'application/octet-stream'
-
-        media = MediaFileUpload(file_path, mimetype=mime_type, resumable=True)
-        file_metadata = {'name': filename, 'parents': [folder_id]}
-        
-        # Cria o ficheiro de imagem no Drive
-        service.files().create(body=file_metadata, media_body=media, fields='id').execute()
+        repo = get_github_repo()
+        if repo:
+            with open(file_path, "rb") as f: content = f.read()
+            try:
+                contents = repo.get_contents(file_path)
+                repo.update_file(contents.path, f"Atualizou Imagem {file_path}", content, contents.sha)
+            except Exception:
+                repo.create_file(file_path, f"Upload Imagem {file_path}", content)
     except Exception as e:
-        st.error(f"Erro ao salvar imagem no Drive: {e}")
+        st.error(f"Erro ao salvar imagem no GitHub: {e}")
 
-def get_media_url_drive(local_path):
-    """Garante que a imagem aparece puxando do Drive caso a pasta local tenha sido apagada"""
+def get_media_url(local_path):
+    """Garante que a imagem aparece mesmo se o servidor apagar a pasta local, puxando do GitHub"""
     if not local_path or pd.isna(local_path): return ""
     if os.path.exists(local_path): return local_path
     
-    # Se a imagem não está no servidor, tenta puxar do Drive
-    try:
-        service = get_drive_service()
-        if not service: return ""
-        
-        folder_id = st.secrets.get("DRIVE_FOLDER_IMAGES_ID", "")
-        if not folder_id: return ""
-        
-        filename = os.path.basename(local_path)
-        
-        query = f"name='{filename}' and '{folder_id}' in parents and trashed=false"
-        results = service.files().list(q=query, fields="files(id, name)").execute()
-        items = results.get('files', [])
-        
-        if items:
-            file_id = items[0]['id']
-            request = service.files().get_media(fileId=file_id)
-            os.makedirs(os.path.dirname(local_path), exist_ok=True)
-            with open(local_path, 'wb') as f:
-                downloader = MediaIoBaseDownload(f, request)
-                done = False
-                while not done:
-                    status, done = downloader.next_chunk()
-            return local_path
-    except Exception:
-        pass
-        
+    repo_name = st.secrets.get("GITHUB_REPO", "")
+    if repo_name:
+        return f"https://raw.githubusercontent.com/{repo_name}/main/{local_path}"
     return ""
 
 def generate_media_name(usuario, atividade, sku, sufixo=""):
@@ -674,8 +649,8 @@ def interface_conferente():
                         path_evidencia = f"{IMGS_PATH}/{base_name}.{ext}"
                         with open(path_evidencia, "wb") as f:
                             f.write(foto_upload.getbuffer())
-                        # Envia para o Google Drive
-                        upload_media_to_drive(path_evidencia)
+                        # Envia para o GitHub
+                        upload_media_to_github(path_evidencia)
 
                     task = {
                         'id_task': task_id_new,
@@ -724,8 +699,8 @@ def interface_conferente():
                     
                     c1.metric("A Pagar", format_currency(row['valor']))
                     
-                    # --- BUSCA A IMAGEM DO DRIVE SE NECESSÁRIO ---
-                    img_url = get_media_url_drive(row['evidencia_img'])
+                    # --- BUSCA A IMAGEM DO GITHUB SE NECESSÁRIO ---
+                    img_url = get_media_url(row['evidencia_img'])
                     if img_url:
                         ext = img_url.split('.')[-1].lower()
                         if ext in ['mp4', 'avi', 'mov', 'mkv']:
@@ -780,8 +755,8 @@ def interface_colaborador_tarefas(uid):
             st.write(f"**Material:** {row['sku_produto']}")
             st.write(f"**Obs:** {row['descricao']}")
             
-            # --- BUSCA A IMAGEM INICIAL DO DRIVE SE NECESSÁRIO ---
-            img_url = get_media_url_drive(row.get('evidencia_img', ''))
+            # --- BUSCA A IMAGEM INICIAL DO GITHUB SE NECESSÁRIO ---
+            img_url = get_media_url(row.get('evidencia_img', ''))
             if img_url:
                  ext = img_url.split('.')[-1].lower()
                  if ext in ['mp4', 'avi', 'mov', 'mkv']:
@@ -859,8 +834,8 @@ def interface_colaborador_tarefas(uid):
                             
                             with open(pth, "wb") as f: f.write(foto.getbuffer())
                             
-                            # Envia para o Google Drive
-                            upload_media_to_drive(pth)
+                            # Envia para o GitHub
+                            upload_media_to_github(pth)
                             
                             update_task_safe(row['id_task'], {
                                 'status': 'Aguardando Aprovação',
@@ -926,8 +901,8 @@ def interface_colaborador_auto(uid):
                     with open(path_init, "wb") as f:
                         f.write(foto_init.getbuffer())
                     
-                    # Envia para o Google Drive
-                    upload_media_to_drive(path_init)
+                    # Envia para o GitHub
+                    upload_media_to_github(path_init)
 
                 task = {
                     'id_task': task_id,
