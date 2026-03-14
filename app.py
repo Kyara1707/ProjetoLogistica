@@ -4,9 +4,9 @@ import os
 from datetime import datetime, timedelta
 import time
 import uuid
-from github import Github # <-- ADICIONADO NOVAMENTE PARA AS IMAGENS
+from github import Github 
 
-# --- NOVAS IMPORTAÇÕES PARA O GOOGLE DRIVE ---
+# --- IMPORTAÇÕES PARA O GOOGLE DRIVE ---
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
@@ -100,6 +100,15 @@ def get_drive_service():
 
 def sync_from_drive(filename):
     """Sincroniza o ficheiro CSV do Drive para o Streamlit"""
+    path = f"{FILES_PATH}/{filename}.csv"
+    
+    # --- TRAVA DE SINCRONIZAÇÃO (VITAL) ---
+    # Impede de baixar versão velha do Drive e zerar a RV logo após atualizar
+    if os.path.exists(path):
+        if (time.time() - os.path.getmtime(path)) < 15:
+            return 
+    # --------------------------------------
+
     try:
         service = get_drive_service()
         if not service: return
@@ -115,13 +124,13 @@ def sync_from_drive(filename):
         if items:
             file_id = items[0]['id']
             request = service.files().get_media(fileId=file_id)
-            with open(f"{FILES_PATH}/{full_name}", 'wb') as f:
+            with open(path, 'wb') as f:
                 downloader = MediaIoBaseDownload(f, request)
                 done = False
                 while not done:
                     status, done = downloader.next_chunk()
     except Exception:
-        pass # Ignora silenciosamente se o ficheiro ainda não existir no Drive
+        pass 
 
 def save_to_drive(filename):
     """Envia o ficheiro CSV guardado pelo Streamlit de volta para o Drive"""
@@ -149,20 +158,24 @@ def save_to_drive(filename):
             # Já existe, então atualiza o existente
             file_id = items[0]['id']
             service.files().update(fileId=file_id, media_body=media).execute()
+            
+            # Limpa ficheiros duplicados do Drive caso a Google crie acidentalmente
+            if len(items) > 1:
+                for dup in items[1:]:
+                    try: service.files().delete(fileId=dup['id']).execute()
+                    except: pass
     except Exception as e:
         st.error(f"Erro na sincronização CSV com o Drive: {e}")
 
-# --- FUNÇÕES DE IMAGEM PARA O GITHUB (RETORNADAS) ---
+# --- FUNÇÕES DE IMAGEM PARA O GITHUB ---
 
 def get_github_repo():
-    """Autentica com o GitHub para salvar as imagens"""
     if "GITHUB_TOKEN" in st.secrets and "GITHUB_REPO" in st.secrets:
         g = Github(st.secrets["GITHUB_TOKEN"])
         return g.get_repo(st.secrets["GITHUB_REPO"])
     return None
 
 def upload_media_to_github(file_path):
-    """Nova função exclusiva para salvar as imagens/vídeos no GitHub"""
     try:
         repo = get_github_repo()
         if repo:
@@ -176,7 +189,6 @@ def upload_media_to_github(file_path):
         st.error(f"Erro ao salvar imagem no GitHub: {e}")
 
 def get_media_url(local_path):
-    """Garante que a imagem aparece mesmo se o servidor apagar a pasta local, puxando do GitHub"""
     if not local_path or pd.isna(local_path): return ""
     if os.path.exists(local_path): return local_path
     
@@ -186,18 +198,15 @@ def get_media_url(local_path):
     return ""
 
 def generate_media_name(usuario, atividade, sku, sufixo=""):
-    """Gera o nome do arquivo no formato: USUARIO_ATIVIDADE_SKU_DATA_HORA"""
     nome_safe = str(usuario).strip().replace(" ", "_").upper()
     atv_safe = str(atividade).strip().replace(" ", "_").replace("/", "-").upper()
     
     if not sku or sku in ["-", "N/A"]:
         sku_safe = "SEM_SKU"
     else:
-        # Pega apenas o código do SKU antes do traço
         sku_safe = str(sku).split(" - ")[0].strip().replace(" ", "_").upper()
         
     data_safe = get_time_br().strftime("%d%m%Y_%H%M%S")
-    
     sufixo_str = f"_{sufixo}" if sufixo else ""
     return f"{nome_safe}_{atv_safe}_{sku_safe}_{data_safe}{sufixo_str}"
 
@@ -222,7 +231,7 @@ def init_data():
         pd.DataFrame(columns=['codigo', 'descricao']).to_csv(f"{FILES_PATH}/sku.csv", sep=';', index=False, encoding='utf-8-sig')
 
 def get_data(filename):
-    sync_from_drive(filename) # Puxa do Google Drive antes de ler
+    sync_from_drive(filename) # Puxa do Google Drive se for seguro (passou na trava)
     path = f"{FILES_PATH}/{filename}.csv"
     
     if not os.path.exists(path):
@@ -244,15 +253,15 @@ def get_data(filename):
                          'qtd_oneway', 'qtd_longneck', 'qtd_produzida', 'evidencia_img']
                  return pd.DataFrame(columns=cols)
             
-            df['valor'] = pd.to_numeric(df['valor'], errors='coerce').fillna(0.0)
-            df['tempo_total_min'] = pd.to_numeric(df['tempo_total_min'], errors='coerce').fillna(0.0)
+            df['valor'] = pd.to_numeric(df['valor'].astype(str).str.replace(',', '.'), errors='coerce').fillna(0.0)
+            df['tempo_total_min'] = pd.to_numeric(df['tempo_total_min'].astype(str).str.replace(',', '.'), errors='coerce').fillna(0.0)
             
         elif filename == 'users':
             if 'rv_acumulada' not in df.columns: df['rv_acumulada'] = 0.0
             df['rv_acumulada'] = pd.to_numeric(df['rv_acumulada'].astype(str).str.replace(',', '.'), errors='coerce').fillna(0.0)
             
         elif filename == 'rules':
-            df['valor'] = pd.to_numeric(df['valor'], errors='coerce').fillna(0.0)
+            df['valor'] = pd.to_numeric(df['valor'].astype(str).str.replace(',', '.'), errors='coerce').fillna(0.0)
             
         return df
     except Exception as e:
@@ -260,7 +269,18 @@ def get_data(filename):
 
 def save_data(df, filename):
     try: 
-        df.to_csv(f"{FILES_PATH}/{filename}.csv", index=False, sep=';', encoding='utf-8-sig')
+        df_out = df.copy()
+        
+        # --- Formatação para Excel (BR) ---
+        if filename == 'users' and 'rv_acumulada' in df_out.columns:
+            df_out['rv_acumulada'] = pd.to_numeric(df_out['rv_acumulada'], errors='coerce').fillna(0.0)
+            df_out['rv_acumulada'] = df_out['rv_acumulada'].apply(lambda x: f"{x:.2f}".replace('.', ','))
+            
+        if filename == 'tasks' and 'valor' in df_out.columns:
+            df_out['valor'] = pd.to_numeric(df_out['valor'], errors='coerce').fillna(0.0)
+            df_out['valor'] = df_out['valor'].apply(lambda x: f"{x:.2f}".replace('.', ','))
+        
+        df_out.to_csv(f"{FILES_PATH}/{filename}.csv", index=False, sep=';', encoding='utf-8-sig')
         save_to_drive(filename)
     except Exception as e: 
         st.error(f"Erro ao guardar {filename}.")
@@ -282,10 +302,20 @@ def update_task_safe(task_id, updates):
 
 def update_rv_safe(user_id, amount):
     df = get_data("users")
-    idx = df[df['id_login'].astype(str).str.strip() == str(user_id).strip()].index
+    
+    # Validação de ID robusta: remove ".0" se existir (1234.0 -> 1234)
+    uid_str = str(user_id).strip()
+    if uid_str.endswith('.0'): uid_str = uid_str[:-2]
+    
+    df['id_temp'] = df['id_login'].astype(str).str.strip().apply(lambda x: x[:-2] if x.endswith('.0') else x)
+    
+    idx = df[df['id_temp'] == uid_str].index
+    
     if not idx.empty:
         atual = float(df.at[idx[0], 'rv_acumulada'])
         df.at[idx[0], 'rv_acumulada'] = atual + float(amount)
+        
+        df = df.drop(columns=['id_temp'])
         save_data(df, "users")
         return True
     return False
@@ -329,9 +359,15 @@ def restore_session():
     if 'uid' in qp:
         uid = qp['uid']
         users = get_data("users")
-        user = users[users['id_login'].astype(str) == uid]
+        
+        # Correção no login também para garantir leitura de IDs
+        uid_str = str(uid).strip()
+        if uid_str.endswith('.0'): uid_str = uid_str[:-2]
+        users['id_temp'] = users['id_login'].astype(str).str.strip().apply(lambda x: x[:-2] if x.endswith('.0') else x)
+        
+        user = users[users['id_temp'] == uid_str]
         if not user.empty:
-            st.session_state['user_id'] = str(user.iloc[0]['id_login'])
+            st.session_state['user_id'] = str(user.iloc[0]['id_login']).replace('.0', '')
             st.session_state['user_name'] = user.iloc[0]['nome']
             tipo = str(user.iloc[0]['tipo']).upper()
             
@@ -373,9 +409,13 @@ def login_screen():
                 st.error("Ficheiro de utilizadores vazio ou não encontrado.")
                 return
 
-            user = users[users['id_login'].astype(str) == lid]
+            users['id_temp'] = users['id_login'].astype(str).str.strip().apply(lambda x: x[:-2] if x.endswith('.0') else x)
+            lid_str = lid
+            if lid_str.endswith('.0'): lid_str = lid_str[:-2]
+            
+            user = users[users['id_temp'] == lid_str]
             if not user.empty:
-                st.query_params["uid"] = str(user.iloc[0]['id_login'])
+                st.query_params["uid"] = lid_str
                 time.sleep(0.1)
                 st.rerun()
             else: st.error("Utilizador não cadastrado.")
@@ -644,12 +684,10 @@ def interface_conferente():
                     
                     if foto_upload:
                         ext = foto_upload.name.split('.')[-1].lower()
-                        # --- NOVO PADRÃO DE NOME DE IMAGEM E UPLOAD ---
                         base_name = generate_media_name(colab, atv, sku_resultado, "INICIAL")
                         path_evidencia = f"{IMGS_PATH}/{base_name}.{ext}"
                         with open(path_evidencia, "wb") as f:
                             f.write(foto_upload.getbuffer())
-                        # Envia para o GitHub
                         upload_media_to_github(path_evidencia)
 
                     task = {
@@ -699,7 +737,6 @@ def interface_conferente():
                     
                     c1.metric("A Pagar", format_currency(row['valor']))
                     
-                    # --- BUSCA A IMAGEM DO GITHUB SE NECESSÁRIO ---
                     img_url = get_media_url(row['evidencia_img'])
                     if img_url:
                         ext = img_url.split('.')[-1].lower()
@@ -755,7 +792,6 @@ def interface_colaborador_tarefas(uid):
             st.write(f"**Material:** {row['sku_produto']}")
             st.write(f"**Obs:** {row['descricao']}")
             
-            # --- BUSCA A IMAGEM INICIAL DO GITHUB SE NECESSÁRIO ---
             img_url = get_media_url(row.get('evidencia_img', ''))
             if img_url:
                  ext = img_url.split('.')[-1].lower()
@@ -782,7 +818,6 @@ def interface_colaborador_tarefas(uid):
                 st.markdown("---")
                 st.write("📝 Detalhes da Execução")
                 
-                # --- CONTAGEM DE TEMPO ---
                 tempo_final = 1
                 try:
                     if row['inicio_execucao'] and row['inicio_execucao'] != "-":
@@ -802,7 +837,6 @@ def interface_colaborador_tarefas(uid):
                     val_calc = float(row['valor'])
                     lata, pet, ow, ln = 0,0,0,0
                     
-                    # --- LÓGICA DE REPACK E QTD ---
                     if row['atividade'] == 'REPACK':
                         c1,c2,c3,c4 = st.columns(4)
                         lata = c1.number_input("Lata", 0)
@@ -827,14 +861,10 @@ def interface_colaborador_tarefas(uid):
                             st.error("⚠️ Precisa anexar uma foto para finalizar!")
                         else:
                             ext = foto.name.split('.')[-1].lower()
-                            
-                            # --- NOVO PADRÃO DE NOME DE IMAGEM E UPLOAD ---
                             base_name = generate_media_name(st.session_state['user_name'], row['atividade'], row['sku_produto'], "FINAL")
                             pth = f"{IMGS_PATH}/{base_name}.{ext}"
                             
                             with open(pth, "wb") as f: f.write(foto.getbuffer())
-                            
-                            # Envia para o GitHub
                             upload_media_to_github(pth)
                             
                             update_task_safe(row['id_task'], {
@@ -893,15 +923,11 @@ def interface_colaborador_auto(uid):
                 
                 if foto_init:
                     ext = foto_init.name.split('.')[-1].lower()
-                    
-                    # --- NOVO PADRÃO DE NOME DE IMAGEM E UPLOAD ---
                     base_name = generate_media_name(st.session_state['user_name'], atv, sku_resultado, "AUTO_INICIAL")
                     path_init = f"{IMGS_PATH}/{base_name}.{ext}"
                     
                     with open(path_init, "wb") as f:
                         f.write(foto_init.getbuffer())
-                    
-                    # Envia para o GitHub
                     upload_media_to_github(path_init)
 
                 task = {
