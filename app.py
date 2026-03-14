@@ -149,6 +149,14 @@ def save_to_drive(filename):
             # Já existe, então atualiza o existente
             file_id = items[0]['id']
             service.files().update(fileId=file_id, media_body=media).execute()
+            
+            # EXTRA: Deleta arquivos duplicados com o mesmo nome
+            if len(items) > 1:
+                for duplicate in items[1:]:
+                    try:
+                        service.files().delete(fileId=duplicate['id']).execute()
+                    except:
+                        pass
     except Exception as e:
         st.error(f"Erro na sincronização CSV com o Drive: {e}")
 
@@ -222,8 +230,18 @@ def init_data():
         pd.DataFrame(columns=['codigo', 'descricao']).to_csv(f"{FILES_PATH}/sku.csv", sep=';', index=False, encoding='utf-8-sig')
 
 def get_data(filename):
-    sync_from_drive(filename) # Puxa do Google Drive antes de ler
     path = f"{FILES_PATH}/{filename}.csv"
+    
+    # --- FIX: Evita sobrescrever com dados antigos do Drive logo após um update ---
+    baixar = True
+    if os.path.exists(path):
+        # Se o arquivo foi modificado há menos de 10 segundos, usa a versão local
+        if (time.time() - os.path.getmtime(path)) < 10:
+            baixar = False
+            
+    if baixar:
+        sync_from_drive(filename) 
+    # ------------------------------------------------------------------------------
     
     if not os.path.exists(path):
         init_data()
@@ -244,11 +262,13 @@ def get_data(filename):
                          'qtd_oneway', 'qtd_longneck', 'qtd_produzida', 'evidencia_img']
                  return pd.DataFrame(columns=cols)
             
-            df['valor'] = pd.to_numeric(df['valor'], errors='coerce').fillna(0.0)
+            # Já trata a vírgula para leitura corretamente
+            df['valor'] = pd.to_numeric(df['valor'].astype(str).str.replace(',', '.'), errors='coerce').fillna(0.0)
             df['tempo_total_min'] = pd.to_numeric(df['tempo_total_min'], errors='coerce').fillna(0.0)
             
         elif filename == 'users':
             if 'rv_acumulada' not in df.columns: df['rv_acumulada'] = 0.0
+            # Já trata a vírgula para leitura corretamente
             df['rv_acumulada'] = pd.to_numeric(df['rv_acumulada'].astype(str).str.replace(',', '.'), errors='coerce').fillna(0.0)
             
         elif filename == 'rules':
@@ -260,7 +280,19 @@ def get_data(filename):
 
 def save_data(df, filename):
     try: 
-        df.to_csv(f"{FILES_PATH}/{filename}.csv", index=False, sep=';', encoding='utf-8-sig')
+        df_out = df.copy()
+        
+        # --- FIX: Formata os valores para o padrão financeiro BR antes de salvar ---
+        if filename == 'users' and 'rv_acumulada' in df_out.columns:
+            df_out['rv_acumulada'] = pd.to_numeric(df_out['rv_acumulada'], errors='coerce').fillna(0.0)
+            df_out['rv_acumulada'] = df_out['rv_acumulada'].apply(lambda x: f"{x:.2f}".replace('.', ','))
+            
+        if filename == 'tasks' and 'valor' in df_out.columns:
+            df_out['valor'] = pd.to_numeric(df_out['valor'], errors='coerce').fillna(0.0)
+            df_out['valor'] = df_out['valor'].apply(lambda x: f"{x:.2f}".replace('.', ','))
+        # ---------------------------------------------------------------------------
+        
+        df_out.to_csv(f"{FILES_PATH}/{filename}.csv", index=False, sep=';', encoding='utf-8-sig')
         save_to_drive(filename)
     except Exception as e: 
         st.error(f"Erro ao guardar {filename}.")
