@@ -420,8 +420,8 @@ def interface_regras():
     rules = get_data("rules")
     if not rules.empty:
         df_show = rules.copy()
-        df_show = df_show[['atividade', 'valor']]
-        df_show.columns = ['Atividade', 'Valor Unitário']
+        df_show = df_show[['atividade', 'valor', 'unidade']]
+        df_show.columns = ['Atividade', 'Valor Unitário', 'Unidade']
         df_show['Valor Unitário'] = df_show['Valor Unitário'].apply(format_currency)
         df_show = df_show.sort_values('Atividade')
         st.dataframe(df_show, use_container_width=True, hide_index=True)
