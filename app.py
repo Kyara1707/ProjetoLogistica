@@ -70,7 +70,21 @@ ATIVIDADES_SEM_SKU = [
     "EFC",
     "EFD",
     "TMA",
-    "RESSUPRIMENTO"
+    "RESSUPRIMENTO",
+    # NOVAS ATIVIDADES SEM SKU
+    "CARREGAMENTO FROTA FIXA",
+    "CARREGAMENTO CARRETA",
+    "CARREGAMENTO FRETEIRO",
+    "DESCARREGAR MARKETING PLACE",
+    "DESCARREGAR FRETEIRO",
+    "ESTOCAR PRODUTOS PUXADA",
+    "ABASTECIMENTO PICKING",
+    "ESTOCAR PRODUTOS SELO VERMELHO",
+    "RETIRAR PRODUTOS SELO VERMELHO",
+    "ABASTECIMENTO REPACK",
+    "ESTOCAR PRODUTOS MARIA MOLE",
+    "BLITZ DE CARREGAMENTO",
+    "MOVIMENTAÇÃO DE REPOSIÇÃO"
 ]
 
 SUPERVISORES_PERMITIDOS = ['99849441', '99813623', '99797465']
@@ -420,8 +434,8 @@ def interface_regras():
     rules = get_data("rules")
     if not rules.empty:
         df_show = rules.copy()
-        df_show = df_show[['atividade', 'valor', 'unidade']]
-        df_show.columns = ['Atividade', 'Valor Unitário', 'Unidade']
+        df_show = df_show[['atividade', 'valor']]
+        df_show.columns = ['Atividade', 'Valor Unitário']
         df_show['Valor Unitário'] = df_show['Valor Unitário'].apply(format_currency)
         df_show = df_show.sort_values('Atividade')
         st.dataframe(df_show, use_container_width=True, hide_index=True)
