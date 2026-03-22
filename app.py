@@ -52,8 +52,8 @@ SUPERVISORES_PERMITIDOS = ['99849441', '99813623', '99797465']
 LIMITE_RV_OPERADOR = 380.00  
 
 NOVAS_REGRAS = [
-    {"atividade": "SELO VERMELHO (T/M)", "valor": 1.25},
-    {"atividade": "SELO VERMELHO (B/V)", "valor": 1.50},
+    {"atividade": "SELO VERMELHO (TOPO/MOLHADO)", "valor": 1.25},
+    {"atividade": "SELO VERMELHO (BASE/VAZAMENTO)", "valor": 1.50},
     {"atividade": "AMARRAÇÃO", "valor": 3.00},
     {"atividade": "REFUGO", "valor": 0.90},
     {"atividade": "BLITZ (EMPURRADA)", "valor": 1.50},
@@ -67,12 +67,12 @@ NOVAS_REGRAS = [
     {"atividade": "PRÉ PICKING MKT PLACE (REDBULL)", "valor": 1.50},
     {"atividade": "CÂMARA FRIA", "valor": 3.00},
     {"atividade": "MÁQUINA LIMPEZA", "valor": 5.00},
-    {"atividade": "5S MARIA MOLE", "valor": 14.50},
-    {"atividade": "5S PICKING/ABASTECIMENTO", "valor": 14.50},
+    {"atividade": "5S", "valor": 14.50},
     {"atividade": "DESCARREGAMENTO DE VAN", "valor": 2.00},
     {"atividade": "EFC", "valor": 3.85},
+    {"atividade": "EFD", "valor": 3.85},
     {"atividade": "TMA", "valor": 7.70},
-    {"atividade": "FEFO", "valor": 3.85}
+    {"atividade": "RESSUPRIMENTO", "valor": 3.85}
 ]
 
 FILES_PATH = "data"
