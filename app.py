@@ -45,9 +45,34 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# --- CONFIGURAÇÕES GLOBAIS ---
-ATIVIDADES_POR_CARRO = ["AMARRAÇÃO", "DESCARREGAMENTO DE VAN"]
-ATIVIDADES_POR_DIA = ["MÁQUINA LIMPEZA", "5S MARIA MOLE", "5S PICKING/ABASTECIMENTO"]
+# --- CONFIGURAÇÕES GLOBAIS DE ATIVIDADES ---
+ATIVIDADES_POR_CARRO = ["DESCARREGAMENTO DE VAN"]
+ATIVIDADES_SEM_QUANTIDADE = ["AMARRAÇÃO", "MÁQUINA LIMPEZA", "5S"]
+
+# Lógica separada: KPIs gerais vs KPIs exclusivos do Operador (FEFO removido, substituído por RESSUPRIMENTO)
+TODOS_KPIS = ['EFC', 'EFD', 'TMA', 'RESSUPRIMENTO'] 
+KPI_OPERADOR = ['EFC', 'EFD', 'TMA', 'RESSUPRIMENTO']
+
+ATIVIDADES_SEM_SKU = [
+    "SELO VERMELHO (TOPO/MOLHADO)",
+    "SELO VERMELHO (BASE/VAZAMENTO)",
+    "AMARRAÇÃO",
+    "REFUGO",
+    "BLITZ (EMPURRADA)",
+    "BLITZ (CARREG)",
+    "BLITZ (RETORNO)",
+    "REPACK",
+    "DEVOLUÇÃO",
+    "TRANSBORDO",
+    "MÁQUINA LIMPEZA",
+    "5S",
+    "DESCARREGAMENTO DE VAN",
+    "EFC",
+    "EFD",
+    "TMA",
+    "RESSUPRIMENTO"
+]
+
 SUPERVISORES_PERMITIDOS = ['99849441', '99813623', '99797465']
 LIMITE_RV_OPERADOR = 380.00  
 
@@ -72,7 +97,31 @@ NOVAS_REGRAS = [
     {"atividade": "EFC", "valor": 3.85},
     {"atividade": "EFD", "valor": 3.85},
     {"atividade": "TMA", "valor": 7.70},
-    {"atividade": "RESSUPRIMENTO", "valor": 3.85}
+    {"atividade": "RESSUPRIMENTO", "valor": 3.85},
+    {"atividade": "ABASTECIMENTO PICKING", "valor": 0.00},
+    {"atividade": "ABASTECIMENTO REPACK", "valor": 0.00},
+    {"atividade": "ARMAZENAR REDBULL GAIOLA", "valor": 0.00},
+    {"atividade": "CARREGAMENTO CARRETA", "valor": 0.00},
+    {"atividade": "CARREGAMENTO FRETEIRO", "valor": 0.00},
+    {"atividade": "CARREGAMENTO FROTA FIXA", "valor": 0.00},
+    {"atividade": "DESCARREGAR MARKETING PLACE", "valor": 0.00},
+    {"atividade": "DESCARREGAR FRETEIRO", "valor": 0.00},
+    {"atividade": "ESTOCAR PRODUTOS MARIA MOLE", "valor": 0.00},
+    {"atividade": "ESTOCAR PRODUTOS PUXADA", "valor": 0.00},
+    {"atividade": "ESTOCAR PRODUTOS SELO VERMELHO", "valor": 0.00},
+    {"atividade": "GUARDAR CHOPP", "valor": 0.00},
+    {"atividade": "GUARDAR PRODUTOS MARKETING PLACE", "valor": 0.00},
+    {"atividade": "MOVIMENTAÇÃO ARMAZÉM A", "valor": 0.00},
+    {"atividade": "MOVIMENTAÇÃO ARMAZÉM B", "valor": 0.00},
+    {"atividade": "MOVIMENTAÇÃO ARMAZÉM C", "valor": 0.00},
+    {"atividade": "MOVIMENTAÇÃO ARMAZÉM D", "valor": 0.00},
+    {"atividade": "MOVIMENTAÇÃO ARMAZÉM M", "valor": 0.00},
+    {"atividade": "MOVIMENTAÇÃO ARMAZÉM R", "valor": 0.00},
+    {"atividade": "MOVIMENTAÇÃO DE REPOSIÇÃO", "valor": 0.00},
+    {"atividade": "MOVIMENTAÇÃO POR RISCO DE QUEBRA", "valor": 0.00},
+    {"atividade": "ORGANIZAR FEFO CHOPP", "valor": 0.00},
+    {"atividade": "ORGANIZAR FEFO PA", "valor": 0.00},
+    {"atividade": "RETIRAR PRODUTOS SELO VERMELHO", "valor": 0.00}
 ]
 
 FILES_PATH = "data"
@@ -90,7 +139,6 @@ def get_time_br():
 # --- INTEGRAÇÃO DIRETA COM O GOOGLE DRIVE ---
 
 def get_drive_service():
-    """Autentica com o Google Drive usando os Segredos configurados no Streamlit"""
     if "gcp_service_account" in st.secrets:
         creds_dict = dict(st.secrets["gcp_service_account"])
         SCOPES = ['https://www.googleapis.com/auth/drive']
@@ -99,15 +147,10 @@ def get_drive_service():
     return None
 
 def sync_from_drive(filename):
-    """Sincroniza o ficheiro CSV do Drive para o Streamlit"""
     path = f"{FILES_PATH}/{filename}.csv"
-    
-    # --- TRAVA DE SINCRONIZAÇÃO (VITAL) ---
-    # Impede de baixar versão velha do Drive e zerar a RV logo após atualizar
     if os.path.exists(path):
         if (time.time() - os.path.getmtime(path)) < 15:
             return 
-    # --------------------------------------
 
     try:
         service = get_drive_service()
@@ -133,7 +176,6 @@ def sync_from_drive(filename):
         pass 
 
 def save_to_drive(filename):
-    """Envia o ficheiro CSV guardado pelo Streamlit de volta para o Drive"""
     try:
         service = get_drive_service()
         if not service: return
@@ -151,15 +193,12 @@ def save_to_drive(filename):
         media = MediaFileUpload(file_path, mimetype='text/csv', resumable=True)
 
         if not items:
-            # Não existe, então cria um novo
             file_metadata = {'name': full_name, 'parents': [folder_id]}
             service.files().create(body=file_metadata, media_body=media, fields='id').execute()
         else:
-            # Já existe, então atualiza o existente
             file_id = items[0]['id']
             service.files().update(fileId=file_id, media_body=media).execute()
             
-            # Limpa ficheiros duplicados do Drive caso a Google crie acidentalmente
             if len(items) > 1:
                 for dup in items[1:]:
                     try: service.files().delete(fileId=dup['id']).execute()
@@ -231,7 +270,7 @@ def init_data():
         pd.DataFrame(columns=['codigo', 'descricao']).to_csv(f"{FILES_PATH}/sku.csv", sep=';', index=False, encoding='utf-8-sig')
 
 def get_data(filename):
-    sync_from_drive(filename) # Puxa do Google Drive se for seguro (passou na trava)
+    sync_from_drive(filename) 
     path = f"{FILES_PATH}/{filename}.csv"
     
     if not os.path.exists(path):
@@ -270,8 +309,6 @@ def get_data(filename):
 def save_data(df, filename):
     try: 
         df_out = df.copy()
-        
-        # --- Formatação para Excel (BR) ---
         if filename == 'users' and 'rv_acumulada' in df_out.columns:
             df_out['rv_acumulada'] = pd.to_numeric(df_out['rv_acumulada'], errors='coerce').fillna(0.0)
             df_out['rv_acumulada'] = df_out['rv_acumulada'].apply(lambda x: f"{x:.2f}".replace('.', ','))
@@ -302,19 +339,15 @@ def update_task_safe(task_id, updates):
 
 def update_rv_safe(user_id, amount):
     df = get_data("users")
-    
-    # Validação de ID robusta: remove ".0" se existir (1234.0 -> 1234)
     uid_str = str(user_id).strip()
     if uid_str.endswith('.0'): uid_str = uid_str[:-2]
     
     df['id_temp'] = df['id_login'].astype(str).str.strip().apply(lambda x: x[:-2] if x.endswith('.0') else x)
-    
     idx = df[df['id_temp'] == uid_str].index
     
     if not idx.empty:
         atual = float(df.at[idx[0], 'rv_acumulada'])
         df.at[idx[0], 'rv_acumulada'] = atual + float(amount)
-        
         df = df.drop(columns=['id_temp'])
         save_data(df, "users")
         return True
@@ -360,7 +393,6 @@ def restore_session():
         uid = qp['uid']
         users = get_data("users")
         
-        # Correção no login também para garantir leitura de IDs
         uid_str = str(uid).strip()
         if uid_str.endswith('.0'): uid_str = uid_str[:-2]
         users['id_temp'] = users['id_login'].astype(str).str.strip().apply(lambda x: x[:-2] if x.endswith('.0') else x)
@@ -436,7 +468,7 @@ def interface_supervisor():
         if tasks.empty:
             st.info("Nenhuma tarefa para validar.")
         else:
-            pendentes = tasks[(tasks['status'] == 'Aguardando Validação') & (tasks['atividade'].isin(['EFC', 'TMA', 'FEFO']))]
+            pendentes = tasks[(tasks['status'] == 'Aguardando Validação') & (tasks['atividade'].isin(TODOS_KPIS))]
             
             if pendentes.empty: st.info("Tudo validado!")
             else:
@@ -548,8 +580,9 @@ def interface_operador():
             except: return 0.0
             
         v_efc = get_val('EFC')
+        v_efd = get_val('EFD')
         v_tma = get_val('TMA')
-        v_fefo = get_val('FEFO')
+        v_res = get_val('RESSUPRIMENTO')
         
         hoje = get_time_br().strftime("%d/%m")
         tasks = get_data("tasks")
@@ -557,7 +590,7 @@ def interface_operador():
         ja_fez = False
         if not tasks.empty:
             tasks['colaborador_id'] = tasks['colaborador_id'].astype(str)
-            ja_fez = not tasks[(tasks['colaborador_id']==uid) & (tasks['data_criacao'].str.contains(hoje)) & (tasks['atividade'].isin(['EFC','TMA']))].empty
+            ja_fez = not tasks[(tasks['colaborador_id']==uid) & (tasks['data_criacao'].str.contains(hoje)) & (tasks['atividade'].isin(KPI_OPERADOR))].empty
         
         if ja_fez:
             st.info("✅ KPIs de hoje já enviados e aguardam validação.")
@@ -565,11 +598,12 @@ def interface_operador():
             with st.form("kpi_form"):
                 st.write("Marque as metas batidas:")
                 c_efc = st.checkbox(f"EFC ({format_currency(v_efc)})")
+                c_efd = st.checkbox(f"EFD ({format_currency(v_efd)})")
                 c_tma = st.checkbox(f"TMA ({format_currency(v_tma)})")
-                c_fefo = st.checkbox(f"FEFO ({format_currency(v_fefo)})")
+                c_res = st.checkbox(f"RESSUPRIMENTO ({format_currency(v_res)})")
                 
                 if st.form_submit_button("ENVIAR"):
-                    lista = [("EFC", c_efc, v_efc), ("TMA", c_tma, v_tma), ("FEFO", c_fefo, v_fefo)]
+                    lista = [("EFC", c_efc, v_efc), ("EFD", c_efd, v_efd), ("TMA", c_tma, v_tma), ("RESSUPRIMENTO", c_res, v_res)]
                     for nome, check, val in lista:
                         vf = val if check else 0.0
                         task = {
@@ -614,7 +648,7 @@ def interface_operador():
         if not tasks.empty:
             minhas = tasks[(tasks['colaborador_id'].astype(str) == uid) & (tasks['status'] == 'Executada')]
             total_tarefas = len(minhas)
-            kpi_tasks = minhas[minhas['atividade'].isin(['EFC', 'TMA', 'FEFO'])]
+            kpi_tasks = minhas[minhas['atividade'].isin(KPI_OPERADOR)]
             if not kpi_tasks.empty:
                 soma_kpis = kpi_tasks['valor'].sum()
 
@@ -655,7 +689,7 @@ def interface_conferente():
         atv = st.selectbox("Atividade", atvs)
         
         sku_resultado = "-"
-        if atv and ("REPACK" not in atv) and ("SELO VERMELHO" not in atv):
+        if atv and atv not in ATIVIDADES_SEM_SKU:
             st.markdown("---")
             sku_resultado = buscar_sku_interface_v2()
             st.markdown("---")
@@ -690,13 +724,17 @@ def interface_conferente():
                             f.write(foto_upload.getbuffer())
                         upload_media_to_github(path_evidencia)
 
+                    cname_df = users[users['nome'] == colab]
+                    is_operador = 'OPERADOR' in str(cname_df.iloc[0]['tipo']).upper() if not cname_df.empty else False
+                    val_para_banco = 0.0 if is_operador else float(val)
+
                     task = {
                         'id_task': task_id_new,
                         'colaborador_id': str(cid), 
                         'conferente_id': st.session_state['user_id'],
                         'atividade': atv, 'area': area, 'descricao': obs, 
                         'sku_produto': sku_resultado, 'prioridade': prio, 'status': 'Pendente',
-                        'valor': float(val), 'data_criacao': get_time_br().strftime("%d/%m %H:%M"),
+                        'valor': val_para_banco, 'data_criacao': get_time_br().strftime("%d/%m %H:%M"),
                         'inicio_execucao': None, 'fim_execucao': None, 
                         'tempo_total_min': 0, 'obs_rejeicao': '',
                         'qtd_lata': 0, 'qtd_pet': 0, 'qtd_oneway': 0, 'qtd_longneck': 0, 
@@ -710,7 +748,7 @@ def interface_conferente():
     elif menu == "Aprovar Tarefas":
         st.title("✅ Aprovação")
         if not tasks.empty:
-            pends = tasks[(tasks['status'] == 'Aguardando Aprovação') & (~tasks['atividade'].isin(['EFC', 'TMA', 'FEFO']))]
+            pends = tasks[(tasks['status'] == 'Aguardando Aprovação') & (~tasks['atividade'].isin(TODOS_KPIS))]
             
             if pends.empty: st.info("Nenhuma tarefa pendente.")
             
@@ -719,11 +757,15 @@ def interface_conferente():
                 k_reject_btn = f"rej_btn_{row['id_task']}_{i}"
                 k_reason = f"reason_{row['id_task']}_{i}"
                 
-                cname = users[users['id_login'].astype(str) == str(row['colaborador_id'])]['nome'].values
-                name = cname[0] if len(cname)>0 else "Desconhecido"
+                cname_df = users[users['id_login'].astype(str) == str(row['colaborador_id'])]
+                nome_usuario = cname_df.iloc[0]['nome'] if not cname_df.empty else 'Desconhecido'
+                tipo_usuario = str(cname_df.iloc[0]['tipo']).upper() if not cname_df.empty else ""
+                
+                is_operador = 'OPERADOR' in tipo_usuario
+                valor_a_pagar = 0.0 if is_operador else float(row['valor'])
                 
                 with st.container():
-                    st.markdown(f"**{name}** - {row['atividade']}")
+                    st.markdown(f"**{nome_usuario}** - {row['atividade']}")
                     sku_info = row['sku_produto'] if pd.notna(row['sku_produto']) else "-"
                     st.caption(f"📦 Material: {sku_info}")
 
@@ -732,10 +774,12 @@ def interface_conferente():
                     
                     if row['atividade'] == 'REPACK':
                         c1.info(f"🥫L:{row['qtd_lata']} 🍾P:{row['qtd_pet']} 🧊OW:{row['qtd_oneway']} 🍺LN:{row['qtd_longneck']}")
+                    elif row['atividade'] in ATIVIDADES_SEM_QUANTIDADE:
+                        c1.info("Tarefa de Execução Única")
                     else:
                         c1.info(f"Qtd: {row['qtd_produzida']}")
                     
-                    c1.metric("A Pagar", format_currency(row['valor']))
+                    c1.metric("A Pagar", format_currency(valor_a_pagar))
                     
                     img_url = get_media_url(row['evidencia_img'])
                     if img_url:
@@ -746,12 +790,12 @@ def interface_conferente():
                             try: c2.image(img_url, width=200, caption="Evidência")
                             except: c2.error("Erro ao carregar imagem")
                     else:
-                        c2.warning("Ficheiro não encontrado no servidor ou Drive.")
+                        c2.warning("Ficheiro não encontrado no servidor ou nuvem.")
                     
                     b1, b2 = st.columns(2)
                     if b1.button("✅ Aprovar", key=k_approve):
-                        if update_rv_safe(row['colaborador_id'], row['valor']):
-                            update_task_safe(row['id_task'], {'status': 'Executada'})
+                        if update_rv_safe(row['colaborador_id'], valor_a_pagar):
+                            update_task_safe(row['id_task'], {'status': 'Executada', 'valor': valor_a_pagar})
                             st.success("Pago!")
                             time.sleep(0.5)
                             st.rerun()
@@ -777,7 +821,7 @@ def interface_colaborador_tarefas(uid):
     tasks['colaborador_id'] = tasks['colaborador_id'].astype(str)
     mask_pend = (tasks['colaborador_id'] == str(uid)) & \
                 (tasks['status'].isin(['Pendente', 'Em Execução', 'Rejeitada'])) & \
-                (~tasks['atividade'].isin(['EFC', 'TMA', 'FEFO']))
+                (~tasks['atividade'].isin(TODOS_KPIS))
     
     todo = tasks[mask_pend]
     
@@ -844,13 +888,21 @@ def interface_colaborador_tarefas(uid):
                         ow = c3.number_input("OW", 0)
                         ln = c4.number_input("LN", 0)
                         val_calc = (lata*0.10)+(pet*0.15)+(ow*0.20)+(ln*0.20)
+                    elif row['atividade'] in ATIVIDADES_SEM_QUANTIDADE: 
+                        st.info("Atividade com valor fixo por execução.")
+                        val_calc = float(row['valor'])
+                        qtd = 1.0
                     elif row['atividade'] in ATIVIDADES_POR_CARRO:
                         qtd = st.number_input("Qtd Carros", 1.0)
                         val_calc = float(row['valor']) * qtd
-                    elif row['atividade'] not in ATIVIDADES_POR_DIA:
+                    else:
                         qtd = st.number_input("Qtd Paletes/Unid", 1.0)
                         val_calc = float(row['valor']) * qtd
                     
+                    if st.session_state.get('role') == 'Operador':
+                        val_calc = 0.0
+                        st.info("💡 Como Operador, a sua remuneração variável contabiliza exclusivamente os KPIs. Esta tarefa soma R$ 0,00 ao seu saldo.")
+
                     st.write(f"**Valor Final:** {format_currency(val_calc)}")
                     
                     st.markdown("**📸 Foto Obrigatória para concluir**")
@@ -893,7 +945,7 @@ def interface_colaborador_auto(uid):
     atv = st.selectbox("Atividade", rules['atividade'].tolist())
 
     sku_resultado = "-"
-    if atv and ("REPACK" not in atv) and ("SELO VERMELHO" not in atv):
+    if atv and atv not in ATIVIDADES_SEM_SKU:
         st.markdown("---")
         sku_resultado = buscar_sku_interface_v2()
         st.markdown("---")
@@ -917,6 +969,9 @@ def interface_colaborador_auto(uid):
                 val = 0.0
                 val_lookup = rules.loc[rules['atividade'] == atv, 'valor']
                 if not val_lookup.empty: val = val_lookup.values[0]
+                
+                if st.session_state.get('role') == 'Operador':
+                    val = 0.0
 
                 path_init = ""
                 task_id = str(uuid.uuid4())
