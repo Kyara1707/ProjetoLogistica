@@ -49,7 +49,7 @@ st.markdown("""
 ATIVIDADES_POR_CARRO = ["DESCARREGAMENTO DE VAN"]
 ATIVIDADES_SEM_QUANTIDADE = ["AMARRAÇÃO", "MÁQUINA LIMPEZA", "5S"]
 
-# Lógica separada: KPIs gerais vs KPIs exclusivos do Operador (FEFO removido, substituído por RESSUPRIMENTO)
+# Lógica separada: KPIs gerais vs KPIs exclusivos do Operador
 TODOS_KPIS = ['EFC', 'EFD', 'TMA', 'RESSUPRIMENTO'] 
 KPI_OPERADOR = ['EFC', 'EFD', 'TMA', 'RESSUPRIMENTO']
 
@@ -420,8 +420,8 @@ def interface_regras():
     rules = get_data("rules")
     if not rules.empty:
         df_show = rules.copy()
-        df_show = df_show[['atividade', 'valor', 'unidade']]
-        df_show.columns = ['Atividade', 'Valor Unitário', 'Unidade']
+        df_show = df_show[['atividade', 'valor']]
+        df_show.columns = ['Atividade', 'Valor Unitário']
         df_show['Valor Unitário'] = df_show['Valor Unitário'].apply(format_currency)
         df_show = df_show.sort_values('Atividade')
         st.dataframe(df_show, use_container_width=True, hide_index=True)
@@ -683,7 +683,9 @@ def interface_conferente():
         st.title("📋 Nova Atividade")
 
         ops = users[~users['tipo'].str.lower().str.contains('conferente', na=False)]['nome'].tolist()
-        atvs = rules['atividade'].tolist() if not rules.empty else []
+        
+        # --- FILTRA OS KPIs DO MENU DO CONFERENTE ---
+        atvs = [a for a in rules['atividade'].tolist() if a not in TODOS_KPIS] if not rules.empty else []
         
         colab = st.selectbox("Colaborador", ops)
         atv = st.selectbox("Atividade", atvs)
@@ -942,7 +944,11 @@ def interface_colaborador_auto(uid):
     ops = users[~users['tipo'].str.lower().str.contains('conferente', na=False)]['nome'].tolist()
     
     colab_sel = st.selectbox("Quem aprova?", confs)
-    atv = st.selectbox("Atividade", rules['atividade'].tolist())
+    
+    # --- FILTRA OS KPIs DO MENU DO COLABORADOR ---
+    atvs = [a for a in rules['atividade'].tolist() if a not in TODOS_KPIS] if not rules.empty else []
+    
+    atv = st.selectbox("Atividade", atvs)
 
     sku_resultado = "-"
     if atv and atv not in ATIVIDADES_SEM_SKU:
