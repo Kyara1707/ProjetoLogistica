@@ -71,7 +71,6 @@ ATIVIDADES_SEM_SKU = [
     "EFD",
     "TMA",
     "RESSUPRIMENTO",
-    # NOVAS ATIVIDADES SEM SKU
     "CARREGAMENTO FROTA FIXA",
     "CARREGAMENTO CARRETA",
     "CARREGAMENTO FRETEIRO",
@@ -366,6 +365,22 @@ def update_rv_safe(user_id, amount):
         save_data(df, "users")
         return True
     return False
+
+# --- FUNÇÃO DE LIMITE DIÁRIO PARA O 5S ---
+def verificar_limite_diario_atividade(colaborador_id, atividade_nome):
+    """Verifica se o usuário já tem uma tarefa criada hoje para determinada atividade."""
+    tasks = get_data("tasks")
+    if tasks.empty: return False
+    
+    hoje_str = get_time_br().strftime("%d/%m")
+    
+    feitas = tasks[
+        (tasks['colaborador_id'].astype(str) == str(colaborador_id)) &
+        (tasks['atividade'] == atividade_nome) &
+        (tasks['data_criacao'].astype(str).str.contains(hoje_str, na=False)) &
+        (tasks['status'] != 'Rejeitada')
+    ]
+    return not feitas.empty
 
 def buscar_sku_interface_v2():
     df_sku = get_data("sku")
@@ -698,7 +713,6 @@ def interface_conferente():
 
         ops = users[~users['tipo'].str.lower().str.contains('conferente', na=False)]['nome'].tolist()
         
-        # --- FILTRA OS KPIs DO MENU DO CONFERENTE ---
         atvs = [a for a in rules['atividade'].tolist() if a not in TODOS_KPIS] if not rules.empty else []
         
         colab = st.selectbox("Colaborador", ops)
@@ -728,6 +742,10 @@ def interface_conferente():
                     if not rules.empty:
                         val_lookup = rules.loc[rules['atividade'] == atv, 'valor']
                         if not val_lookup.empty: val = val_lookup.values[0]
+
+                    # --- NOVA REGRA 5S: APENAS 1 VEZ POR DIA ---
+                    if atv == "5S" and verificar_limite_diario_atividade(cid, "5S"):
+                        val = 0.0
 
                     path_evidencia = ""
                     task_id_new = str(uuid.uuid4())
@@ -918,6 +936,8 @@ def interface_colaborador_tarefas(uid):
                     if st.session_state.get('role') == 'Operador':
                         val_calc = 0.0
                         st.info("💡 Como Operador, a sua remuneração variável contabiliza exclusivamente os KPIs. Esta tarefa soma R$ 0,00 ao seu saldo.")
+                    elif row['atividade'] == '5S' and val_calc == 0.0:
+                        st.info("💡 Limite de 1 pagamento diário para 5S já atingido. Somente a produtividade será registrada (R$ 0,00).")
 
                     st.write(f"**Valor Final:** {format_currency(val_calc)}")
                     
@@ -959,7 +979,6 @@ def interface_colaborador_auto(uid):
     
     colab_sel = st.selectbox("Quem aprova?", confs)
     
-    # --- FILTRA OS KPIs DO MENU DO COLABORADOR ---
     atvs = [a for a in rules['atividade'].tolist() if a not in TODOS_KPIS] if not rules.empty else []
     
     atv = st.selectbox("Atividade", atvs)
@@ -989,6 +1008,10 @@ def interface_colaborador_auto(uid):
                 val = 0.0
                 val_lookup = rules.loc[rules['atividade'] == atv, 'valor']
                 if not val_lookup.empty: val = val_lookup.values[0]
+                
+                # --- NOVA REGRA 5S: APENAS 1 VEZ POR DIA ---
+                if atv == "5S" and verificar_limite_diario_atividade(uid, "5S"):
+                    val = 0.0
                 
                 if st.session_state.get('role') == 'Operador':
                     val = 0.0
