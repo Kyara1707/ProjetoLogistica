@@ -316,7 +316,12 @@ def get_data(filename):
             df['rv_acumulada'] = pd.to_numeric(df['rv_acumulada'].astype(str).str.replace(',', '.'), errors='coerce').fillna(0.0)
             
         elif filename == 'rules':
+            # ATUALIZAÇÃO AUTOMÁTICA DE REGRAS NO DRIVE SE HOUVER DIFERENÇAS
             df['valor'] = pd.to_numeric(df['valor'].astype(str).str.replace(',', '.'), errors='coerce').fillna(0.0)
+            if len(df) < len(NOVAS_REGRAS):
+                df_novo = pd.DataFrame(NOVAS_REGRAS)
+                save_data(df_novo, 'rules')
+                return df_novo
             
         return df
     except Exception as e:
@@ -371,12 +376,9 @@ def update_rv_safe(user_id, amount):
 
 # --- FUNÇÃO DE LIMITE DIÁRIO PARA O 5S ---
 def verificar_limite_diario_atividade(colaborador_id, atividade_nome):
-    """Verifica se o usuário já tem uma tarefa criada hoje para determinada atividade."""
     tasks = get_data("tasks")
     if tasks.empty: return False
-    
     hoje_str = get_time_br().strftime("%d/%m")
-    
     feitas = tasks[
         (tasks['colaborador_id'].astype(str) == str(colaborador_id)) &
         (tasks['atividade'] == atividade_nome) &
@@ -738,6 +740,7 @@ def interface_conferente():
             
             c1, c2 = st.columns(2)
             prio = c1.select_slider("Prioridade", ["Baixa", "Média", "Alta"])
+            # >>> AQUI FICA O CAMPO DE PRAZO PARA O CONFERENTE <<<
             prazo_horas = c2.number_input("Prazo para Execução (Horas)", min_value=0.5, value=24.0, step=0.5)
 
             st.markdown("### 📷 Evidência Inicial (Opcional)")
@@ -1021,7 +1024,10 @@ def interface_colaborador_auto(uid):
     with st.form("auto_c"):
         loc = st.text_input("Local")
         obs = st.text_area("Obs")
+        
+        # >>> AQUI FICA O CAMPO DE PRAZO PARA O COLABORADOR <<<
         prazo_horas = st.number_input("Prazo para Execução (Horas)", min_value=0.5, value=2.0, step=0.5)
+        
         foto_init = st.file_uploader("Foto Inicial (Opcional)")
         
         if st.form_submit_button("CRIAR TAREFA"):
