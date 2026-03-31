@@ -276,7 +276,7 @@ def init_data():
         cols = ['id_task', 'colaborador_id', 'conferente_id', 'atividade', 'area', 'descricao', 
                 'sku_produto', 'prioridade', 'status', 'valor', 'data_criacao', 'inicio_execucao', 
                 'fim_execucao', 'tempo_total_min', 'obs_rejeicao', 'qtd_lata', 'qtd_pet', 
-                'qtd_oneway', 'qtd_longneck', 'qtd_produzida', 'evidencia_img']
+                'qtd_oneway', 'qtd_longneck', 'qtd_produzida', 'evidencia_img', 'prazo']
         pd.DataFrame(columns=cols).to_csv(f"{FILES_PATH}/tasks.csv", sep=';', index=False, encoding='utf-8-sig')
 
     if not os.path.exists(f"{FILES_PATH}/sku.csv"):
@@ -302,9 +302,12 @@ def get_data(filename):
                  cols = ['id_task', 'colaborador_id', 'conferente_id', 'atividade', 'area', 'descricao', 
                          'sku_produto', 'prioridade', 'status', 'valor', 'data_criacao', 'inicio_execucao', 
                          'fim_execucao', 'tempo_total_min', 'obs_rejeicao', 'qtd_lata', 'qtd_pet', 
-                         'qtd_oneway', 'qtd_longneck', 'qtd_produzida', 'evidencia_img']
+                         'qtd_oneway', 'qtd_longneck', 'qtd_produzida', 'evidencia_img', 'prazo']
                  return pd.DataFrame(columns=cols)
             
+            if 'prazo' not in df.columns:
+                df['prazo'] = '2099-12-31 23:59:59'
+
             df['valor'] = pd.to_numeric(df['valor'].astype(str).str.replace(',', '.'), errors='coerce').fillna(0.0)
             df['tempo_total_min'] = pd.to_numeric(df['tempo_total_min'].astype(str).str.replace(',', '.'), errors='coerce').fillna(0.0)
             
@@ -566,7 +569,8 @@ def interface_supervisor():
                             'inicio_execucao': "-", 'fim_execucao': "-", 
                             'tempo_total_min': 0, 'obs_rejeicao': "", 
                             'qtd_lata': 0, 'qtd_pet': 0, 'qtd_oneway': 0, 'qtd_longneck': 0, 
-                            'qtd_produzida': 0, 'evidencia_img': ""
+                            'qtd_produzida': 0, 'evidencia_img': "",
+                            'prazo': '2099-12-31 23:59:59'
                         }
                         add_task_safe(task)
                         st.success(f"Sucesso! Ajuste de {format_currency(valor_final)} efetuado.")
@@ -649,7 +653,8 @@ def interface_operador():
                             'inicio_execucao': "-", 'fim_execucao': "-", 
                             'tempo_total_min': 0, 'obs_rejeicao': "", 
                             'qtd_lata': 0, 'qtd_pet': 0, 'qtd_oneway': 0, 'qtd_longneck': 0, 
-                            'qtd_produzida': 0, 'evidencia_img': ""
+                            'qtd_produzida': 0, 'evidencia_img': "",
+                            'prazo': '2099-12-31 23:59:59'
                         }
                         add_task_safe(task)
                     st.success("Enviado com sucesso!")
@@ -730,7 +735,10 @@ def interface_conferente():
         with st.form("task_form"):
             area = st.text_input("Local")
             obs = st.text_area("Obs")
-            prio = st.select_slider("Prioridade", ["Baixa", "Média", "Alta"])
+            
+            c1, c2 = st.columns(2)
+            prio = c1.select_slider("Prioridade", ["Baixa", "Média", "Alta"])
+            prazo_horas = c2.number_input("Prazo para Execução (Horas)", min_value=0.5, value=24.0, step=0.5)
 
             st.markdown("### 📷 Evidência Inicial (Opcional)")
             foto_upload = st.file_uploader("Carregar Foto ou Vídeo", type=['png', 'jpg', 'jpeg', 'mp4', 'avi'])
@@ -743,7 +751,6 @@ def interface_conferente():
                         val_lookup = rules.loc[rules['atividade'] == atv, 'valor']
                         if not val_lookup.empty: val = val_lookup.values[0]
 
-                    # --- NOVA REGRA 5S: APENAS 1 VEZ POR DIA ---
                     if atv == "5S" and verificar_limite_diario_atividade(cid, "5S"):
                         val = 0.0
 
@@ -761,6 +768,9 @@ def interface_conferente():
                     cname_df = users[users['nome'] == colab]
                     is_operador = 'OPERADOR' in str(cname_df.iloc[0]['tipo']).upper() if not cname_df.empty else False
                     val_para_banco = 0.0 if is_operador else float(val)
+                    
+                    # Calcula o prazo exato no futuro
+                    prazo_calculado = (get_time_br() + timedelta(hours=prazo_horas)).strftime("%Y-%m-%d %H:%M:%S")
 
                     task = {
                         'id_task': task_id_new,
@@ -772,10 +782,11 @@ def interface_conferente():
                         'inicio_execucao': None, 'fim_execucao': None, 
                         'tempo_total_min': 0, 'obs_rejeicao': '',
                         'qtd_lata': 0, 'qtd_pet': 0, 'qtd_oneway': 0, 'qtd_longneck': 0, 
-                        'qtd_produzida': 0, 'evidencia_img': path_evidencia
+                        'qtd_produzida': 0, 'evidencia_img': path_evidencia,
+                        'prazo': prazo_calculado
                     }
                     add_task_safe(task)
-                    st.success(f"Tarefa criada para {colab}!")
+                    st.success(f"Tarefa criada para {colab} com prazo de {prazo_horas}h!")
                 else:
                     st.error("Selecione colaborador e atividade")
 
@@ -857,15 +868,30 @@ def interface_colaborador_tarefas(uid):
                 (tasks['status'].isin(['Pendente', 'Em Execução', 'Rejeitada'])) & \
                 (~tasks['atividade'].isin(TODOS_KPIS))
     
-    todo = tasks[mask_pend]
+    todo = tasks[mask_pend].copy()
     
-    if todo.empty: st.info("Nenhuma tarefa pendente.")
+    if todo.empty: 
+        st.info("Nenhuma tarefa pendente.")
+        return
+        
+    # --- ORDENAÇÃO POR PRAZO (MAIS PRÓXIMO PRIMEIRO) ---
+    todo['prazo_dt'] = pd.to_datetime(todo['prazo'], errors='coerce').fillna(pd.Timestamp('2099-12-31 23:59:59'))
+    todo = todo.sort_values(by='prazo_dt', ascending=True)
     
     for i, row in todo.iterrows():
         k_init = f"init_{row['id_task']}"
         k_end = f"end_{row['id_task']}"
         
-        with st.expander(f"{row['atividade']} ({row['status']})", expanded=True):
+        # PREPARA A EXIBIÇÃO DO PRAZO NO CABEÇALHO
+        prazo_exibicao = ""
+        try:
+            dt_p = pd.to_datetime(row['prazo'])
+            if dt_p.year < 2090: # Esconde os prazos default (2099) para tarefas antigas
+                prazo_exibicao = f" | ⏳ Prazo: {dt_p.strftime('%d/%m %H:%M')}"
+        except:
+            pass
+        
+        with st.expander(f"{row['atividade']} ({row['status']}){prazo_exibicao}", expanded=True):
             st.write(f"**Local:** {row['area']}")
             st.write(f"**Material:** {row['sku_produto']}")
             st.write(f"**Obs:** {row['descricao']}")
@@ -995,6 +1021,7 @@ def interface_colaborador_auto(uid):
     with st.form("auto_c"):
         loc = st.text_input("Local")
         obs = st.text_area("Obs")
+        prazo_horas = st.number_input("Prazo para Execução (Horas)", min_value=0.5, value=2.0, step=0.5)
         foto_init = st.file_uploader("Foto Inicial (Opcional)")
         
         if st.form_submit_button("CRIAR TAREFA"):
@@ -1009,7 +1036,6 @@ def interface_colaborador_auto(uid):
                 val_lookup = rules.loc[rules['atividade'] == atv, 'valor']
                 if not val_lookup.empty: val = val_lookup.values[0]
                 
-                # --- NOVA REGRA 5S: APENAS 1 VEZ POR DIA ---
                 if atv == "5S" and verificar_limite_diario_atividade(uid, "5S"):
                     val = 0.0
                 
@@ -1027,6 +1053,8 @@ def interface_colaborador_auto(uid):
                     with open(path_init, "wb") as f:
                         f.write(foto_init.getbuffer())
                     upload_media_to_github(path_init)
+                    
+                prazo_calculado = (get_time_br() + timedelta(hours=prazo_horas)).strftime("%Y-%m-%d %H:%M:%S")
 
                 task = {
                     'id_task': task_id,
@@ -1038,7 +1066,8 @@ def interface_colaborador_auto(uid):
                     'inicio_execucao': None, 'fim_execucao': None,
                     'tempo_total_min': 0, 'obs_rejeicao': '',
                     'qtd_lata': 0, 'qtd_pet': 0, 'qtd_oneway': 0, 'qtd_longneck': 0,
-                    'qtd_produzida': 0, 'evidencia_img': path_init
+                    'qtd_produzida': 0, 'evidencia_img': path_init,
+                    'prazo': prazo_calculado
                 }
                 add_task_safe(task)
                 st.success("Auto-cadastro realizado!")
