@@ -740,7 +740,6 @@ def interface_conferente():
             
             c1, c2 = st.columns(2)
             prio = c1.select_slider("Prioridade", ["Baixa", "Média", "Alta"])
-            # >>> AQUI FICA O CAMPO DE PRAZO PARA O CONFERENTE <<<
             prazo_horas = c2.number_input("Prazo para Execução (Horas)", min_value=0.5, value=24.0, step=0.5)
 
             st.markdown("### 📷 Evidência Inicial (Opcional)")
@@ -772,7 +771,6 @@ def interface_conferente():
                     is_operador = 'OPERADOR' in str(cname_df.iloc[0]['tipo']).upper() if not cname_df.empty else False
                     val_para_banco = 0.0 if is_operador else float(val)
                     
-                    # Calcula o prazo exato no futuro
                     prazo_calculado = (get_time_br() + timedelta(hours=prazo_horas)).strftime("%Y-%m-%d %H:%M:%S")
 
                     task = {
@@ -816,6 +814,9 @@ def interface_conferente():
                     st.markdown(f"**{nome_usuario}** - {row['atividade']}")
                     sku_info = row['sku_produto'] if pd.notna(row['sku_produto']) else "-"
                     st.caption(f"📦 Material: {sku_info}")
+                    
+                    # --- MOSTRA A DATA/HORA DE CRIAÇÃO E TÉRMINO NA APROVAÇÃO ---
+                    st.write(f"📅 **Criada em:** {row['data_criacao']} | ✅ **Finalizada em:** {row.get('fim_execucao', '-')}")
 
                     c1, c2 = st.columns(2)
                     c1.write(f"⏱️ {row['tempo_total_min']} min")
@@ -860,6 +861,7 @@ def interface_conferente():
 # --- FUNÇÕES REUTILIZÁVEIS ---
 def interface_colaborador_tarefas(uid):
     tasks = get_data("tasks")
+    users = get_data("users") # Puxa usuários para mapear nomes
     st.title("🗂️ Tarefas")
     
     if tasks.empty:
@@ -877,27 +879,41 @@ def interface_colaborador_tarefas(uid):
         st.info("Nenhuma tarefa pendente.")
         return
         
-    # --- ORDENAÇÃO POR PRAZO (MAIS PRÓXIMO PRIMEIRO) ---
     todo['prazo_dt'] = pd.to_datetime(todo['prazo'], errors='coerce').fillna(pd.Timestamp('2099-12-31 23:59:59'))
     todo = todo.sort_values(by='prazo_dt', ascending=True)
+    
+    # Prepara o mapa de usuários para consultar quem passou a tarefa
+    users['id_temp'] = users['id_login'].astype(str).str.strip().apply(lambda x: x[:-2] if x.endswith('.0') else x)
     
     for i, row in todo.iterrows():
         k_init = f"init_{row['id_task']}"
         k_end = f"end_{row['id_task']}"
         
-        # PREPARA A EXIBIÇÃO DO PRAZO NO CABEÇALHO
         prazo_exibicao = ""
         try:
             dt_p = pd.to_datetime(row['prazo'])
-            if dt_p.year < 2090: # Esconde os prazos default (2099) para tarefas antigas
+            if dt_p.year < 2090: 
                 prazo_exibicao = f" | ⏳ Prazo: {dt_p.strftime('%d/%m %H:%M')}"
         except:
             pass
+            
+        # --- DESCOBRE O NOME DA PESSOA QUE PASSOU A TAREFA ---
+        conf_id_str = str(row['conferente_id']).strip()
+        if conf_id_str.endswith('.0'): conf_id_str = conf_id_str[:-2]
+        
+        if conf_id_str == 'SISTEMA':
+            nome_passou = "SISTEMA"
+        else:
+            c_df = users[users['id_temp'] == conf_id_str]
+            nome_passou = c_df.iloc[0]['nome'] if not c_df.empty else f"ID {conf_id_str}"
         
         with st.expander(f"{row['atividade']} ({row['status']}){prazo_exibicao}", expanded=True):
-            st.write(f"**Local:** {row['area']}")
-            st.write(f"**Material:** {row['sku_produto']}")
-            st.write(f"**Obs:** {row['descricao']}")
+            # --- MOSTRA QUEM PASSOU E A DATA/HORA DE CRIAÇÃO ---
+            st.write(f"👤 **Passada por:** {nome_passou}")
+            st.write(f"📅 **Data/Hora Criação:** {row['data_criacao']}")
+            st.write(f"📍 **Local:** {row['area']}")
+            st.write(f"📦 **Material:** {row['sku_produto']}")
+            st.write(f"📝 **Obs:** {row['descricao']}")
             
             img_url = get_media_url(row.get('evidencia_img', ''))
             if img_url:
@@ -909,7 +925,8 @@ def interface_colaborador_tarefas(uid):
 
             if row['status'] == 'Rejeitada': st.error(f"Motivo: {row['obs_rejeicao']}")
             
-            fmt_completo = "%Y-%m-%d %H:%M:%S"
+            # Formato de data/hora aprimorado para o Brasil (Término/Início)
+            fmt_completo = "%d/%m/%Y %H:%M:%S"
 
             if row['status'] != 'Em Execução':
                 if st.button("▶️ INICIAR", key=k_init):
@@ -928,7 +945,7 @@ def interface_colaborador_tarefas(uid):
                 tempo_final = 1
                 try:
                     if row['inicio_execucao'] and row['inicio_execucao'] != "-":
-                        start_time = pd.to_datetime(row['inicio_execucao'])
+                        start_time = pd.to_datetime(row['inicio_execucao'], format="%d/%m/%Y %H:%M:%S")
                         end_time = pd.to_datetime(get_time_br())
                         diff_min = (end_time - start_time).total_seconds() / 60
                         tempo_final = int(round(diff_min))
@@ -990,7 +1007,7 @@ def interface_colaborador_tarefas(uid):
                                 'valor': val_calc,
                                 'evidencia_img': pth,
                                 'qtd_lata': lata, 'qtd_pet': pet, 'qtd_oneway': ow, 'qtd_longneck': ln,
-                                'fim_execucao': get_time_br().strftime(fmt_completo),
+                                'fim_execucao': get_time_br().strftime(fmt_completo), # SALVA A DATA/HORA DE TÉRMINO AQUI
                                 'tempo_total_min': tempo_final 
                             })
                             if 'f_id' in st.session_state: del st.session_state['f_id']
@@ -1024,10 +1041,7 @@ def interface_colaborador_auto(uid):
     with st.form("auto_c"):
         loc = st.text_input("Local")
         obs = st.text_area("Obs")
-        
-        # >>> AQUI FICA O CAMPO DE PRAZO PARA O COLABORADOR <<<
         prazo_horas = st.number_input("Prazo para Execução (Horas)", min_value=0.5, value=2.0, step=0.5)
-        
         foto_init = st.file_uploader("Foto Inicial (Opcional)")
         
         if st.form_submit_button("CRIAR TAREFA"):
