@@ -363,7 +363,8 @@ def update_rv_safe(user_id, amount):
     uid_str = str(user_id).strip()
     if uid_str.endswith('.0'): uid_str = uid_str[:-2]
     
-    df['id_temp'] = df['id_login'].astype(str).str.strip().apply(lambda x: x[:-2] if x.endswith('.0') else x)
+    # --- CORREÇÃO GERAL APLICADA AQUI ---
+    df['id_temp'] = df['id_login'].astype(str).str.strip().apply(lambda x: str(x)[:-2] if str(x).endswith('.0') else str(x))
     idx = df[df['id_temp'] == uid_str].index
     
     if not idx.empty:
@@ -429,7 +430,9 @@ def restore_session():
         
         uid_str = str(uid).strip()
         if uid_str.endswith('.0'): uid_str = uid_str[:-2]
-        users['id_temp'] = users['id_login'].astype(str).str.strip().apply(lambda x: x[:-2] if x.endswith('.0') else x)
+        
+        # --- CORREÇÃO GERAL APLICADA AQUI ---
+        users['id_temp'] = users['id_login'].astype(str).str.strip().apply(lambda x: str(x)[:-2] if str(x).endswith('.0') else str(x))
         
         user = users[users['id_temp'] == uid_str]
         if not user.empty:
@@ -475,7 +478,8 @@ def login_screen():
                 st.error("Ficheiro de utilizadores vazio ou não encontrado.")
                 return
 
-            users['id_temp'] = users['id_login'].astype(str).str.strip().apply(lambda x: x[:-2] if x.endswith('.0') else x)
+            # --- CORREÇÃO GERAL APLICADA AQUI ---
+            users['id_temp'] = users['id_login'].astype(str).str.strip().apply(lambda x: str(x)[:-2] if str(x).endswith('.0') else str(x))
             lid_str = lid
             if lid_str.endswith('.0'): lid_str = lid_str[:-2]
             
@@ -815,7 +819,6 @@ def interface_conferente():
                     sku_info = row['sku_produto'] if pd.notna(row['sku_produto']) else "-"
                     st.caption(f"📦 Material: {sku_info}")
                     
-                    # --- MOSTRA A DATA/HORA DE CRIAÇÃO E TÉRMINO NA APROVAÇÃO ---
                     st.write(f"📅 **Criada em:** {row['data_criacao']} | ✅ **Finalizada em:** {row.get('fim_execucao', '-')}")
 
                     c1, c2 = st.columns(2)
@@ -861,7 +864,7 @@ def interface_conferente():
 # --- FUNÇÕES REUTILIZÁVEIS ---
 def interface_colaborador_tarefas(uid):
     tasks = get_data("tasks")
-    users = get_data("users") # Puxa usuários para mapear nomes
+    users = get_data("users")
     st.title("🗂️ Tarefas")
     
     if tasks.empty:
@@ -882,8 +885,8 @@ def interface_colaborador_tarefas(uid):
     todo['prazo_dt'] = pd.to_datetime(todo['prazo'], errors='coerce').fillna(pd.Timestamp('2099-12-31 23:59:59'))
     todo = todo.sort_values(by='prazo_dt', ascending=True)
     
-    # Prepara o mapa de usuários para consultar quem passou a tarefa
-    users['id_temp'] = users['id_login'].astype(str).str.strip().apply(lambda x: x[:-2] if x.endswith('.0') else x)
+    # --- CORREÇÃO GERAL APLICADA AQUI ---
+    users['id_temp'] = users['id_login'].astype(str).str.strip().apply(lambda x: str(x)[:-2] if str(x).endswith('.0') else str(x))
     
     for i, row in todo.iterrows():
         k_init = f"init_{row['id_task']}"
@@ -897,7 +900,6 @@ def interface_colaborador_tarefas(uid):
         except:
             pass
             
-        # --- DESCOBRE O NOME DA PESSOA QUE PASSOU A TAREFA ---
         conf_id_str = str(row['conferente_id']).strip()
         if conf_id_str.endswith('.0'): conf_id_str = conf_id_str[:-2]
         
@@ -908,7 +910,6 @@ def interface_colaborador_tarefas(uid):
             nome_passou = c_df.iloc[0]['nome'] if not c_df.empty else f"ID {conf_id_str}"
         
         with st.expander(f"{row['atividade']} ({row['status']}){prazo_exibicao}", expanded=True):
-            # --- MOSTRA QUEM PASSOU E A DATA/HORA DE CRIAÇÃO ---
             st.write(f"👤 **Passada por:** {nome_passou}")
             st.write(f"📅 **Data/Hora Criação:** {row['data_criacao']}")
             st.write(f"📍 **Local:** {row['area']}")
@@ -925,7 +926,6 @@ def interface_colaborador_tarefas(uid):
 
             if row['status'] == 'Rejeitada': st.error(f"Motivo: {row['obs_rejeicao']}")
             
-            # Formato de data/hora aprimorado para o Brasil (Término/Início)
             fmt_completo = "%d/%m/%Y %H:%M:%S"
 
             if row['status'] != 'Em Execução':
@@ -1007,7 +1007,7 @@ def interface_colaborador_tarefas(uid):
                                 'valor': val_calc,
                                 'evidencia_img': pth,
                                 'qtd_lata': lata, 'qtd_pet': pet, 'qtd_oneway': ow, 'qtd_longneck': ln,
-                                'fim_execucao': get_time_br().strftime(fmt_completo), # SALVA A DATA/HORA DE TÉRMINO AQUI
+                                'fim_execucao': get_time_br().strftime(fmt_completo),
                                 'tempo_total_min': tempo_final 
                             })
                             if 'f_id' in st.session_state: del st.session_state['f_id']
