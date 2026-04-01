@@ -363,7 +363,6 @@ def update_rv_safe(user_id, amount):
     uid_str = str(user_id).strip()
     if uid_str.endswith('.0'): uid_str = uid_str[:-2]
     
-    # --- CORREÇÃO GERAL APLICADA AQUI ---
     df['id_temp'] = df['id_login'].astype(str).str.strip().apply(lambda x: str(x)[:-2] if str(x).endswith('.0') else str(x))
     idx = df[df['id_temp'] == uid_str].index
     
@@ -431,7 +430,6 @@ def restore_session():
         uid_str = str(uid).strip()
         if uid_str.endswith('.0'): uid_str = uid_str[:-2]
         
-        # --- CORREÇÃO GERAL APLICADA AQUI ---
         users['id_temp'] = users['id_login'].astype(str).str.strip().apply(lambda x: str(x)[:-2] if str(x).endswith('.0') else str(x))
         
         user = users[users['id_temp'] == uid_str]
@@ -465,6 +463,149 @@ def interface_regras():
     else:
         st.warning("Tabela de regras vazia.")
 
+# --- MÓDULOS DE CRIAÇÃO E APROVAÇÃO (PARTILHADOS) ---
+def render_menu_criar_tarefa(users, rules):
+    st.title("📋 Nova Atividade")
+
+    ops = users[~users['tipo'].str.lower().str.contains('conferente|supervisor', na=False, regex=True)]['nome'].tolist()
+    
+    atvs = [a for a in rules['atividade'].tolist() if a not in TODOS_KPIS] if not rules.empty else []
+    
+    colab = st.selectbox("Colaborador", ops)
+    atv = st.selectbox("Atividade", atvs)
+    
+    sku_resultado = "-"
+    if atv and atv not in ATIVIDADES_SEM_SKU:
+        st.markdown("---")
+        sku_resultado = buscar_sku_interface_v2()
+        st.markdown("---")
+    else:
+        st.info("SKU não obrigatório para esta atividade.")
+        sku_resultado = "N/A"
+
+    with st.form("task_form"):
+        area = st.text_input("Local")
+        obs = st.text_area("Obs")
+        
+        c1, c2 = st.columns(2)
+        prio = c1.select_slider("Prioridade", ["Baixa", "Média", "Alta"])
+        prazo_horas = c2.number_input("Prazo para Execução (Horas)", min_value=0.5, value=24.0, step=0.5)
+
+        st.markdown("### 📷 Evidência Inicial (Opcional)")
+        foto_upload = st.file_uploader("Carregar Foto ou Vídeo", type=['png', 'jpg', 'jpeg', 'mp4', 'avi'])
+        
+        if st.form_submit_button("Enviar"):
+            if colab and atv:
+                cid = users[users['nome'] == colab].iloc[0]['id_login']
+                val = 0.0
+                if not rules.empty:
+                    val_lookup = rules.loc[rules['atividade'] == atv, 'valor']
+                    if not val_lookup.empty: val = val_lookup.values[0]
+
+                if atv == "5S" and verificar_limite_diario_atividade(cid, "5S"):
+                    val = 0.0
+
+                path_evidencia = ""
+                task_id_new = str(uuid.uuid4())
+                
+                if foto_upload:
+                    ext = foto_upload.name.split('.')[-1].lower()
+                    base_name = generate_media_name(colab, atv, sku_resultado, "INICIAL")
+                    path_evidencia = f"{IMGS_PATH}/{base_name}.{ext}"
+                    with open(path_evidencia, "wb") as f:
+                        f.write(foto_upload.getbuffer())
+                    upload_media_to_github(path_evidencia)
+
+                cname_df = users[users['nome'] == colab]
+                is_operador = 'OPERADOR' in str(cname_df.iloc[0]['tipo']).upper() if not cname_df.empty else False
+                val_para_banco = 0.0 if is_operador else float(val)
+                
+                prazo_calculado = (get_time_br() + timedelta(hours=prazo_horas)).strftime("%Y-%m-%d %H:%M:%S")
+
+                task = {
+                    'id_task': task_id_new,
+                    'colaborador_id': str(cid), 
+                    'conferente_id': st.session_state['user_id'],
+                    'atividade': atv, 'area': area, 'descricao': obs, 
+                    'sku_produto': sku_resultado, 'prioridade': prio, 'status': 'Pendente',
+                    'valor': val_para_banco, 'data_criacao': get_time_br().strftime("%d/%m %H:%M"),
+                    'inicio_execucao': None, 'fim_execucao': None, 
+                    'tempo_total_min': 0, 'obs_rejeicao': '',
+                    'qtd_lata': 0, 'qtd_pet': 0, 'qtd_oneway': 0, 'qtd_longneck': 0, 
+                    'qtd_produzida': 0, 'evidencia_img': path_evidencia,
+                    'prazo': prazo_calculado
+                }
+                add_task_safe(task)
+                st.success(f"Tarefa criada para {colab} com prazo de {prazo_horas}h!")
+            else:
+                st.error("Selecione colaborador e atividade")
+
+def render_menu_aprovar_tarefas(users, tasks):
+    st.title("✅ Aprovação")
+    if not tasks.empty:
+        pends = tasks[(tasks['status'] == 'Aguardando Aprovação') & (~tasks['atividade'].isin(TODOS_KPIS))]
+        
+        if pends.empty: st.info("Nenhuma tarefa pendente.")
+        
+        for i, row in pends.iterrows():
+            k_approve = f"ok_{row['id_task']}_{i}"
+            k_reject_btn = f"rej_btn_{row['id_task']}_{i}"
+            k_reason = f"reason_{row['id_task']}_{i}"
+            
+            cname_df = users[users['id_login'].astype(str) == str(row['colaborador_id'])]
+            nome_usuario = cname_df.iloc[0]['nome'] if not cname_df.empty else 'Desconhecido'
+            tipo_usuario = str(cname_df.iloc[0]['tipo']).upper() if not cname_df.empty else ""
+            
+            is_operador = 'OPERADOR' in tipo_usuario
+            valor_a_pagar = 0.0 if is_operador else float(row['valor'])
+            
+            with st.container():
+                st.markdown(f"**{nome_usuario}** - {row['atividade']}")
+                sku_info = row['sku_produto'] if pd.notna(row['sku_produto']) else "-"
+                st.caption(f"📦 Material: {sku_info}")
+                
+                st.write(f"📅 **Criada em:** {row['data_criacao']} | ✅ **Finalizada em:** {row.get('fim_execucao', '-')}")
+
+                c1, c2 = st.columns(2)
+                c1.write(f"⏱️ {row['tempo_total_min']} min")
+                
+                if row['atividade'] == 'REPACK':
+                    c1.info(f"🥫L:{row['qtd_lata']} 🍾P:{row['qtd_pet']} 🧊OW:{row['qtd_oneway']} 🍺LN:{row['qtd_longneck']}")
+                elif row['atividade'] in ATIVIDADES_SEM_QUANTIDADE:
+                    c1.info("Tarefa de Execução Única")
+                else:
+                    c1.info(f"Qtd: {row['qtd_produzida']}")
+                
+                c1.metric("A Pagar", format_currency(valor_a_pagar))
+                
+                img_url = get_media_url(row['evidencia_img'])
+                if img_url:
+                    ext = img_url.split('.')[-1].lower()
+                    if ext in ['mp4', 'avi', 'mov', 'mkv']:
+                        c2.video(img_url)
+                    else:
+                        try: c2.image(img_url, width=200, caption="Evidência")
+                        except: c2.error("Erro ao carregar imagem")
+                else:
+                    c2.warning("Ficheiro não encontrado no servidor ou nuvem.")
+                
+                b1, b2 = st.columns(2)
+                if b1.button("✅ Aprovar", key=k_approve):
+                    if update_rv_safe(row['colaborador_id'], valor_a_pagar):
+                        update_task_safe(row['id_task'], {'status': 'Executada', 'valor': valor_a_pagar})
+                        st.success("Pago!")
+                        time.sleep(0.5)
+                        st.rerun()
+                
+                with b2:
+                    with st.expander("❌ Rejeitar"):
+                        motivo = st.text_input("Motivo:", key=k_reason)
+                        if st.button("Confirmar Rejeição", key=k_reject_btn):
+                            update_task_safe(row['id_task'], {'status': 'Rejeitada', 'obs_rejeicao': motivo})
+                            st.rerun()
+                st.divider()
+    else: st.info("Sem tarefas.")
+
 # --- TELAS DO SISTEMA ---
 def login_screen():
     st.markdown("<h1 style='text-align: center; color: #0054a6;'>ProTrack Logística 🚛</h1>", unsafe_allow_html=True)
@@ -478,7 +619,6 @@ def login_screen():
                 st.error("Ficheiro de utilizadores vazio ou não encontrado.")
                 return
 
-            # --- CORREÇÃO GERAL APLICADA AQUI ---
             users['id_temp'] = users['id_login'].astype(str).str.strip().apply(lambda x: str(x)[:-2] if str(x).endswith('.0') else str(x))
             lid_str = lid
             if lid_str.endswith('.0'): lid_str = lid_str[:-2]
@@ -492,7 +632,8 @@ def login_screen():
 
 def interface_supervisor():
     st.sidebar.header(f"👮 {st.session_state.get('user_name', 'Sup')}")
-    menu = st.sidebar.radio("Menu", ["Validar KPIs", "Ajustes Financeiros", "Ranking", "Regras & Valores", "Sair"])
+    # Menu do supervisor agora incluí "Criar Tarefa" e "Aprovar Tarefas"
+    menu = st.sidebar.radio("Menu", ["Criar Tarefa", "Aprovar Tarefas", "Validar KPIs", "Ajustes Financeiros", "Ranking", "Regras & Valores", "Sair"])
     
     if menu == "Sair": do_logout()
     elif menu == "Regras & Valores": interface_regras()
@@ -501,7 +642,13 @@ def interface_supervisor():
     rules = get_data("rules")
     tasks = get_data("tasks")
 
-    if menu == "Validar KPIs":
+    if menu == "Criar Tarefa":
+        render_menu_criar_tarefa(users, rules)
+
+    elif menu == "Aprovar Tarefas":
+        render_menu_aprovar_tarefas(users, tasks)
+
+    elif menu == "Validar KPIs":
         st.title("🛡️ Validar Metas (KPIs)")
         if tasks.empty:
             st.info("Nenhuma tarefa para validar.")
@@ -718,148 +865,10 @@ def interface_conferente():
 
     if menu == "Sair": do_logout()
     elif menu == "Regras & Valores": interface_regras()
-
     elif menu == "Criar Tarefa":
-        st.title("📋 Nova Atividade")
-
-        ops = users[~users['tipo'].str.lower().str.contains('conferente', na=False)]['nome'].tolist()
-        
-        atvs = [a for a in rules['atividade'].tolist() if a not in TODOS_KPIS] if not rules.empty else []
-        
-        colab = st.selectbox("Colaborador", ops)
-        atv = st.selectbox("Atividade", atvs)
-        
-        sku_resultado = "-"
-        if atv and atv not in ATIVIDADES_SEM_SKU:
-            st.markdown("---")
-            sku_resultado = buscar_sku_interface_v2()
-            st.markdown("---")
-        else:
-            st.info("SKU não obrigatório para esta atividade.")
-            sku_resultado = "N/A"
-
-        with st.form("task_form"):
-            area = st.text_input("Local")
-            obs = st.text_area("Obs")
-            
-            c1, c2 = st.columns(2)
-            prio = c1.select_slider("Prioridade", ["Baixa", "Média", "Alta"])
-            prazo_horas = c2.number_input("Prazo para Execução (Horas)", min_value=0.5, value=24.0, step=0.5)
-
-            st.markdown("### 📷 Evidência Inicial (Opcional)")
-            foto_upload = st.file_uploader("Carregar Foto ou Vídeo", type=['png', 'jpg', 'jpeg', 'mp4', 'avi'])
-            
-            if st.form_submit_button("Enviar"):
-                if colab and atv:
-                    cid = users[users['nome'] == colab].iloc[0]['id_login']
-                    val = 0.0
-                    if not rules.empty:
-                        val_lookup = rules.loc[rules['atividade'] == atv, 'valor']
-                        if not val_lookup.empty: val = val_lookup.values[0]
-
-                    if atv == "5S" and verificar_limite_diario_atividade(cid, "5S"):
-                        val = 0.0
-
-                    path_evidencia = ""
-                    task_id_new = str(uuid.uuid4())
-                    
-                    if foto_upload:
-                        ext = foto_upload.name.split('.')[-1].lower()
-                        base_name = generate_media_name(colab, atv, sku_resultado, "INICIAL")
-                        path_evidencia = f"{IMGS_PATH}/{base_name}.{ext}"
-                        with open(path_evidencia, "wb") as f:
-                            f.write(foto_upload.getbuffer())
-                        upload_media_to_github(path_evidencia)
-
-                    cname_df = users[users['nome'] == colab]
-                    is_operador = 'OPERADOR' in str(cname_df.iloc[0]['tipo']).upper() if not cname_df.empty else False
-                    val_para_banco = 0.0 if is_operador else float(val)
-                    
-                    prazo_calculado = (get_time_br() + timedelta(hours=prazo_horas)).strftime("%Y-%m-%d %H:%M:%S")
-
-                    task = {
-                        'id_task': task_id_new,
-                        'colaborador_id': str(cid), 
-                        'conferente_id': st.session_state['user_id'],
-                        'atividade': atv, 'area': area, 'descricao': obs, 
-                        'sku_produto': sku_resultado, 'prioridade': prio, 'status': 'Pendente',
-                        'valor': val_para_banco, 'data_criacao': get_time_br().strftime("%d/%m %H:%M"),
-                        'inicio_execucao': None, 'fim_execucao': None, 
-                        'tempo_total_min': 0, 'obs_rejeicao': '',
-                        'qtd_lata': 0, 'qtd_pet': 0, 'qtd_oneway': 0, 'qtd_longneck': 0, 
-                        'qtd_produzida': 0, 'evidencia_img': path_evidencia,
-                        'prazo': prazo_calculado
-                    }
-                    add_task_safe(task)
-                    st.success(f"Tarefa criada para {colab} com prazo de {prazo_horas}h!")
-                else:
-                    st.error("Selecione colaborador e atividade")
-
+        render_menu_criar_tarefa(users, rules)
     elif menu == "Aprovar Tarefas":
-        st.title("✅ Aprovação")
-        if not tasks.empty:
-            pends = tasks[(tasks['status'] == 'Aguardando Aprovação') & (~tasks['atividade'].isin(TODOS_KPIS))]
-            
-            if pends.empty: st.info("Nenhuma tarefa pendente.")
-            
-            for i, row in pends.iterrows():
-                k_approve = f"ok_{row['id_task']}_{i}"
-                k_reject_btn = f"rej_btn_{row['id_task']}_{i}"
-                k_reason = f"reason_{row['id_task']}_{i}"
-                
-                cname_df = users[users['id_login'].astype(str) == str(row['colaborador_id'])]
-                nome_usuario = cname_df.iloc[0]['nome'] if not cname_df.empty else 'Desconhecido'
-                tipo_usuario = str(cname_df.iloc[0]['tipo']).upper() if not cname_df.empty else ""
-                
-                is_operador = 'OPERADOR' in tipo_usuario
-                valor_a_pagar = 0.0 if is_operador else float(row['valor'])
-                
-                with st.container():
-                    st.markdown(f"**{nome_usuario}** - {row['atividade']}")
-                    sku_info = row['sku_produto'] if pd.notna(row['sku_produto']) else "-"
-                    st.caption(f"📦 Material: {sku_info}")
-                    
-                    st.write(f"📅 **Criada em:** {row['data_criacao']} | ✅ **Finalizada em:** {row.get('fim_execucao', '-')}")
-
-                    c1, c2 = st.columns(2)
-                    c1.write(f"⏱️ {row['tempo_total_min']} min")
-                    
-                    if row['atividade'] == 'REPACK':
-                        c1.info(f"🥫L:{row['qtd_lata']} 🍾P:{row['qtd_pet']} 🧊OW:{row['qtd_oneway']} 🍺LN:{row['qtd_longneck']}")
-                    elif row['atividade'] in ATIVIDADES_SEM_QUANTIDADE:
-                        c1.info("Tarefa de Execução Única")
-                    else:
-                        c1.info(f"Qtd: {row['qtd_produzida']}")
-                    
-                    c1.metric("A Pagar", format_currency(valor_a_pagar))
-                    
-                    img_url = get_media_url(row['evidencia_img'])
-                    if img_url:
-                        ext = img_url.split('.')[-1].lower()
-                        if ext in ['mp4', 'avi', 'mov', 'mkv']:
-                            c2.video(img_url)
-                        else:
-                            try: c2.image(img_url, width=200, caption="Evidência")
-                            except: c2.error("Erro ao carregar imagem")
-                    else:
-                        c2.warning("Ficheiro não encontrado no servidor ou nuvem.")
-                    
-                    b1, b2 = st.columns(2)
-                    if b1.button("✅ Aprovar", key=k_approve):
-                        if update_rv_safe(row['colaborador_id'], valor_a_pagar):
-                            update_task_safe(row['id_task'], {'status': 'Executada', 'valor': valor_a_pagar})
-                            st.success("Pago!")
-                            time.sleep(0.5)
-                            st.rerun()
-                    
-                    with b2:
-                        with st.expander("❌ Rejeitar"):
-                            motivo = st.text_input("Motivo:", key=k_reason)
-                            if st.button("Confirmar Rejeição", key=k_reject_btn):
-                                update_task_safe(row['id_task'], {'status': 'Rejeitada', 'obs_rejeicao': motivo})
-                                st.rerun()
-                    st.divider()
-        else: st.info("Sem tarefas.")
+        render_menu_aprovar_tarefas(users, tasks)
 
 # --- FUNÇÕES REUTILIZÁVEIS ---
 def interface_colaborador_tarefas(uid):
@@ -885,7 +894,6 @@ def interface_colaborador_tarefas(uid):
     todo['prazo_dt'] = pd.to_datetime(todo['prazo'], errors='coerce').fillna(pd.Timestamp('2099-12-31 23:59:59'))
     todo = todo.sort_values(by='prazo_dt', ascending=True)
     
-    # --- CORREÇÃO GERAL APLICADA AQUI ---
     users['id_temp'] = users['id_login'].astype(str).str.strip().apply(lambda x: str(x)[:-2] if str(x).endswith('.0') else str(x))
     
     for i, row in todo.iterrows():
@@ -1019,9 +1027,11 @@ def interface_colaborador_auto(uid):
     st.title("🙋 Auto-Cadastro")
     rules = get_data("rules")
     users = get_data("users")
-    confs = users[users['tipo'].str.contains('CONFERENTE', case=False, na=False)]['nome'].tolist()
     
-    ops = users[~users['tipo'].str.lower().str.contains('conferente', na=False)]['nome'].tolist()
+    # --- SUPERVISORES AGORA APARECEM NA LISTA DE QUEM APROVA ---
+    confs = users[users['tipo'].str.contains('CONFERENTE|SUPERVISOR', case=False, na=False)]['nome'].tolist()
+    
+    ops = users[~users['tipo'].str.lower().str.contains('conferente|supervisor', na=False, regex=True)]['nome'].tolist()
     
     colab_sel = st.selectbox("Quem aprova?", confs)
     
@@ -1049,7 +1059,7 @@ def interface_colaborador_auto(uid):
                 try:
                     conf_id = users[users['nome'] == colab_sel].iloc[0]['id_login']
                 except:
-                    st.error("Conferente inválido")
+                    st.error("Aprovador inválido")
                     return
 
                 val = 0.0
