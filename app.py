@@ -345,7 +345,10 @@ def save_data(df, filename):
 
 def add_task_safe(task_dict):
     df = get_data("tasks")
-    new_row = pd.DataFrame([task_dict])
+    # PREVENÇÃO: Força todos os valores do dicionário para string ANTES de inserir no Pandas
+    # Isso evita conflitos de tipo de dados entre a nova tarefa e o histórico salvo.
+    safe_dict = {k: str(v) if v is not None else "" for k, v in task_dict.items()}
+    new_row = pd.DataFrame([safe_dict])
     df = pd.concat([df, new_row], ignore_index=True)
     save_data(df, "tasks")
 
@@ -377,7 +380,8 @@ def update_rv_safe(user_id, amount):
     
     if not idx.empty:
         atual = float(df.at[idx[0], 'rv_acumulada'])
-        df.at[idx[0], 'rv_acumulada'] = atual + float(amount)
+        # PREVENÇÃO: Converte a soma de volta para string antes de gravar.
+        df.at[idx[0], 'rv_acumulada'] = str(atual + float(amount))
         df = df.drop(columns=['id_temp'])
         save_data(df, "users")
         return True
