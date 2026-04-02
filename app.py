@@ -316,7 +316,6 @@ def get_data(filename):
             df['rv_acumulada'] = pd.to_numeric(df['rv_acumulada'].astype(str).str.replace(',', '.'), errors='coerce').fillna(0.0)
             
         elif filename == 'rules':
-            # ATUALIZAÇÃO AUTOMÁTICA DE REGRAS NO DRIVE SE HOUVER DIFERENÇAS
             df['valor'] = pd.to_numeric(df['valor'].astype(str).str.replace(',', '.'), errors='coerce').fillna(0.0)
             if len(df) < len(NOVAS_REGRAS):
                 df_novo = pd.DataFrame(NOVAS_REGRAS)
@@ -345,10 +344,13 @@ def save_data(df, filename):
 
 def add_task_safe(task_dict):
     df = get_data("tasks")
-    # PREVENÇÃO: Força todos os valores do dicionário para string ANTES de inserir no Pandas
-    # Isso evita conflitos de tipo de dados entre a nova tarefa e o histórico salvo.
-    safe_dict = {k: str(v) if v is not None else "" for k, v in task_dict.items()}
-    new_row = pd.DataFrame([safe_dict])
+    new_row = pd.DataFrame([task_dict])
+    
+    # BALA DE PRATA 1: Converte todas as colunas para "object" antes do concat 
+    # para aceitar qualquer tipo de dado (texto, número, nulo)
+    for col in df.columns:
+        df[col] = df[col].astype(object)
+        
     df = pd.concat([df, new_row], ignore_index=True)
     save_data(df, "tasks")
 
@@ -359,15 +361,10 @@ def update_task_safe(task_id, updates):
     if not idx.empty:
         for col, val in updates.items():
             if col in df.columns:
-                # Verifica se a coluna original do DataFrame é numérica
-                if pd.api.types.is_numeric_dtype(df[col]):
-                    try:
-                        df.at[idx[0], col] = float(val)
-                    except:
-                        df.at[idx[0], col] = 0.0
-                else:
-                    # Se for coluna de texto, guarda como texto (evita o erro do PyArrow)
-                    df.at[idx[0], col] = str(val) if val is not None else ""
+                # BALA DE PRATA 2: Converte a coluna para "object" para que o Pandas 
+                # e o PyArrow aceitem qualquer valor sem reclamar de tipos estritos
+                df[col] = df[col].astype(object)
+                df.at[idx[0], col] = val
         save_data(df, "tasks")
 
 def update_rv_safe(user_id, amount):
@@ -379,9 +376,12 @@ def update_rv_safe(user_id, amount):
     idx = df[df['id_temp'] == uid_str].index
     
     if not idx.empty:
+        # BALA DE PRATA 3: Desativa as regras de tipagem estritas para esta coluna
+        df['rv_acumulada'] = df['rv_acumulada'].astype(object)
+        
         atual = float(df.at[idx[0], 'rv_acumulada'])
-        # PREVENÇÃO: Converte a soma de volta para string antes de gravar.
-        df.at[idx[0], 'rv_acumulada'] = str(atual + float(amount))
+        df.at[idx[0], 'rv_acumulada'] = atual + float(amount)
+        
         df = df.drop(columns=['id_temp'])
         save_data(df, "users")
         return True
