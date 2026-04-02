@@ -355,7 +355,8 @@ def update_task_safe(task_id, updates):
     idx = df[df['id_task'].astype(str) == str(task_id)].index
     if not idx.empty:
         for col, val in updates.items():
-            df.at[idx[0], col] = val
+            # CORREÇÃO AQUI: Força a conversão para texto (string)
+            df.at[idx[0], col] = str(val) if val is not None else ""
         save_data(df, "tasks")
 
 def update_rv_safe(user_id, amount):
