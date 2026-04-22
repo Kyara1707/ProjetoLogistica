@@ -572,18 +572,37 @@ def render_menu_criar_tarefa(users, rules):
 def render_menu_aprovar_tarefas(users, tasks):
     st.title("✅ Aprovação")
     if not tasks.empty:
+        # Puxa apenas as pendentes que não são KPIs
         pends = tasks[(tasks['status'] == 'Aguardando Aprovação') & (~tasks['atividade'].isin(TODOS_KPIS))]
         
-        if pends.empty: st.info("Nenhuma tarefa pendente.")
+        # 1. FILTRO: Se for Conferente, só vê as tarefas que foram sorteadas para ele
+        if st.session_state.get('role') == 'Conferente':
+            pends = pends[pends['conferente_id'].astype(str) == str(st.session_state['user_id'])]
+        
+        if pends.empty: 
+            st.info("Nenhuma tarefa pendente para si no momento.")
+            return
         
         for i, row in pends.iterrows():
             k_approve = f"ok_{row['id_task']}_{i}"
             k_reject_btn = f"rej_btn_{row['id_task']}_{i}"
             k_reason = f"reason_{row['id_task']}_{i}"
             
+            # Puxar nome de quem executou
             cname_df = users[users['id_login'].astype(str) == str(row['colaborador_id'])]
             nome_usuario = cname_df.iloc[0]['nome'] if not cname_df.empty else 'Desconhecido'
             tipo_usuario = str(cname_df.iloc[0]['tipo']).upper() if not cname_df.empty else ""
+            
+            # 2. IDENTIFICAÇÃO DO CONFERENTE: Descobrir o nome do Conferente sorteado para mostrar na tela
+            conf_id_str = str(row['conferente_id']).strip()
+            if conf_id_str.endswith('.0'): conf_id_str = conf_id_str[:-2]
+            
+            if conf_id_str == 'SISTEMA':
+                nome_conferente = "SISTEMA"
+            else:
+                users['id_temp'] = users['id_login'].astype(str).str.strip().apply(lambda x: str(x)[:-2] if str(x).endswith('.0') else str(x))
+                c_df = users[users['id_temp'] == conf_id_str]
+                nome_conferente = c_df.iloc[0]['nome'] if not c_df.empty else f"ID {conf_id_str}"
             
             is_operador = 'OPERADOR' in tipo_usuario
             valor_a_pagar = 0.0 if is_operador else float(row['valor'])
@@ -591,7 +610,9 @@ def render_menu_aprovar_tarefas(users, tasks):
             with st.container():
                 st.markdown(f"**{nome_usuario}** - {row['atividade']}")
                 sku_info = row['sku_produto'] if pd.notna(row['sku_produto']) else "-"
-                st.caption(f"📦 Material: {sku_info}")
+                
+                # Exibe o SKU e de quem é a responsabilidade de aprovar
+                st.caption(f"📦 Material: {sku_info} | 🔍 Sorteado para Aprovar: **{nome_conferente}**")
                 
                 st.write(f"📅 **Criada em:** {row['data_criacao']} | ✅ **Finalizada em:** {row.get('fim_execucao', '-')}")
 
@@ -633,7 +654,8 @@ def render_menu_aprovar_tarefas(users, tasks):
                             update_task_safe(row['id_task'], {'status': 'Rejeitada', 'obs_rejeicao': motivo})
                             st.rerun()
                 st.divider()
-    else: st.info("Sem tarefas.")
+    else: 
+        st.info("Sem tarefas.")
 
 # --- TELAS DO SISTEMA ---
 def login_screen():
@@ -661,7 +683,6 @@ def login_screen():
 
 def interface_supervisor():
     st.sidebar.header(f"👮 {st.session_state.get('user_name', 'Sup')}")
-    # Menu do supervisor agora incluí "Criar Tarefa" e "Aprovar Tarefas"
     menu = st.sidebar.radio("Menu", ["Criar Tarefa", "Aprovar Tarefas", "Validar KPIs", "Ajustes Financeiros", "Ranking", "Regras & Valores", "Sair"])
     
     if menu == "Sair": do_logout()
@@ -1057,7 +1078,6 @@ def interface_colaborador_auto(uid):
     rules = get_data("rules")
     users = get_data("users")
     
-    # --- SUPERVISORES AGORA APARECEM NA LISTA DE QUEM APROVA ---
     confs = users[users['tipo'].str.contains('CONFERENTE|SUPERVISOR', case=False, na=False)]['nome'].tolist()
     
     ops = users[~users['tipo'].str.lower().str.contains('conferente|supervisor', na=False, regex=True)]['nome'].tolist()
