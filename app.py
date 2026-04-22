@@ -4,6 +4,7 @@ import os
 from datetime import datetime, timedelta
 import time
 import uuid
+import random
 from github import Github 
 
 # --- IMPORTAÇÕES PARA O GOOGLE DRIVE ---
@@ -504,52 +505,67 @@ def render_menu_criar_tarefa(users, rules):
         prio = c1.select_slider("Prioridade", ["Baixa", "Média", "Alta"])
         prazo_horas = c2.number_input("Prazo para Execução (Horas)", min_value=0.5, value=24.0, step=0.5)
 
-        st.markdown("### 📷 Evidência Inicial (Opcional)")
+        st.markdown("### 📷 Evidência Inicial (Obrigatória)")
         foto_upload = st.file_uploader("Carregar Foto ou Vídeo", type=['png', 'jpg', 'jpeg', 'mp4', 'avi'])
         
         if st.form_submit_button("Enviar"):
             if colab and atv:
-                cid = users[users['nome'] == colab].iloc[0]['id_login']
-                val = 0.0
-                if not rules.empty:
-                    val_lookup = rules.loc[rules['atividade'] == atv, 'valor']
-                    if not val_lookup.empty: val = val_lookup.values[0]
-
-                if atv == "5S" and verificar_limite_diario_atividade(cid, "5S"):
+                if not foto_upload:
+                    st.error("⚠️ A foto de evidência inicial é OBRIGATÓRIA para criar a tarefa.")
+                else:
+                    cid = users[users['nome'] == colab].iloc[0]['id_login']
                     val = 0.0
+                    if not rules.empty:
+                        val_lookup = rules.loc[rules['atividade'] == atv, 'valor']
+                        if not val_lookup.empty: val = val_lookup.values[0]
 
-                path_evidencia = ""
-                task_id_new = str(uuid.uuid4())
-                
-                if foto_upload:
-                    ext = foto_upload.name.split('.')[-1].lower()
-                    base_name = generate_media_name(colab, atv, sku_resultado, "INICIAL")
-                    path_evidencia = f"{IMGS_PATH}/{base_name}.{ext}"
-                    with open(path_evidencia, "wb") as f:
-                        f.write(foto_upload.getbuffer())
-                    upload_media_to_github(path_evidencia)
+                    if atv == "5S" and verificar_limite_diario_atividade(cid, "5S"):
+                        val = 0.0
 
-                cname_df = users[users['nome'] == colab]
-                is_operador = 'OPERADOR' in str(cname_df.iloc[0]['tipo']).upper() if not cname_df.empty else False
-                val_para_banco = 0.0 if is_operador else float(val)
-                
-                prazo_calculado = (get_time_br() + timedelta(hours=prazo_horas)).strftime("%Y-%m-%d %H:%M:%S")
+                    path_evidencia = ""
+                    task_id_new = str(uuid.uuid4())
+                    
+                    if foto_upload:
+                        ext = foto_upload.name.split('.')[-1].lower()
+                        base_name = generate_media_name(colab, atv, sku_resultado, "INICIAL")
+                        path_evidencia = f"{IMGS_PATH}/{base_name}.{ext}"
+                        with open(path_evidencia, "wb") as f:
+                            f.write(foto_upload.getbuffer())
+                        upload_media_to_github(path_evidencia)
 
-                task = {
-                    'id_task': task_id_new,
-                    'colaborador_id': str(cid), 
-                    'conferente_id': st.session_state['user_id'],
-                    'atividade': atv, 'area': area, 'descricao': obs, 
-                    'sku_produto': sku_resultado, 'prioridade': prio, 'status': 'Pendente',
-                    'valor': val_para_banco, 'data_criacao': get_time_br().strftime("%d/%m %H:%M"),
-                    'inicio_execucao': None, 'fim_execucao': None, 
-                    'tempo_total_min': 0, 'obs_rejeicao': '',
-                    'qtd_lata': 0, 'qtd_pet': 0, 'qtd_oneway': 0, 'qtd_longneck': 0, 
-                    'qtd_produzida': 0, 'evidencia_img': path_evidencia,
-                    'prazo': prazo_calculado
-                }
-                add_task_safe(task)
-                st.success(f"Tarefa criada para {colab} com prazo de {prazo_horas}h!")
+                    cname_df = users[users['nome'] == colab]
+                    is_operador = 'OPERADOR' in str(cname_df.iloc[0]['tipo']).upper() if not cname_df.empty else False
+                    val_para_banco = 0.0 if is_operador else float(val)
+                    
+                    prazo_calculado = (get_time_br() + timedelta(hours=prazo_horas)).strftime("%Y-%m-%d %H:%M:%S")
+
+                    # SISTEMA ANTI-FRAUDE: Sorteio de outro conferente para aprovar a tarefa
+                    confs_disponiveis = users[
+                        (users['tipo'].str.contains('CONFERENTE|SUPERVISOR', case=False, na=False)) & 
+                        (users['id_login'].astype(str) != str(st.session_state['user_id']))
+                    ]
+                    
+                    if not confs_disponiveis.empty:
+                        sorteado_id = str(random.choice(confs_disponiveis['id_login'].tolist()))
+                    else:
+                        # Se for o único conferente no sistema, não há outro remédio senão usar o próprio
+                        sorteado_id = str(st.session_state['user_id'])
+
+                    task = {
+                        'id_task': task_id_new,
+                        'colaborador_id': str(cid), 
+                        'conferente_id': sorteado_id,
+                        'atividade': atv, 'area': area, 'descricao': obs, 
+                        'sku_produto': sku_resultado, 'prioridade': prio, 'status': 'Pendente',
+                        'valor': val_para_banco, 'data_criacao': get_time_br().strftime("%d/%m %H:%M"),
+                        'inicio_execucao': None, 'fim_execucao': None, 
+                        'tempo_total_min': 0, 'obs_rejeicao': '',
+                        'qtd_lata': 0, 'qtd_pet': 0, 'qtd_oneway': 0, 'qtd_longneck': 0, 
+                        'qtd_produzida': 0, 'evidencia_img': path_evidencia,
+                        'prazo': prazo_calculado
+                    }
+                    add_task_safe(task)
+                    st.success(f"Tarefa criada para {colab} com prazo de {prazo_horas}h!")
             else:
                 st.error("Selecione colaborador e atividade")
 
@@ -1065,55 +1081,58 @@ def interface_colaborador_auto(uid):
         loc = st.text_input("Local")
         obs = st.text_area("Obs")
         prazo_horas = st.number_input("Prazo para Execução (Horas)", min_value=0.5, value=2.0, step=0.5)
-        foto_init = st.file_uploader("Foto Inicial (Opcional)")
+        foto_init = st.file_uploader("Foto Inicial (Obrigatória)")
         
         if st.form_submit_button("CRIAR TAREFA"):
             if colab_sel and atv:
-                try:
-                    conf_id = users[users['nome'] == colab_sel].iloc[0]['id_login']
-                except:
-                    st.error("Aprovador inválido")
-                    return
+                if not foto_init:
+                    st.error("⚠️ A foto de evidência inicial é OBRIGATÓRIA para criar a tarefa.")
+                else:
+                    try:
+                        conf_id = users[users['nome'] == colab_sel].iloc[0]['id_login']
+                    except:
+                        st.error("Aprovador inválido")
+                        return
 
-                val = 0.0
-                val_lookup = rules.loc[rules['atividade'] == atv, 'valor']
-                if not val_lookup.empty: val = val_lookup.values[0]
-                
-                if atv == "5S" and verificar_limite_diario_atividade(uid, "5S"):
                     val = 0.0
-                
-                if st.session_state.get('role') == 'Operador':
-                    val = 0.0
-
-                path_init = ""
-                task_id = str(uuid.uuid4())
-                
-                if foto_init:
-                    ext = foto_init.name.split('.')[-1].lower()
-                    base_name = generate_media_name(st.session_state['user_name'], atv, sku_resultado, "AUTO_INICIAL")
-                    path_init = f"{IMGS_PATH}/{base_name}.{ext}"
+                    val_lookup = rules.loc[rules['atividade'] == atv, 'valor']
+                    if not val_lookup.empty: val = val_lookup.values[0]
                     
-                    with open(path_init, "wb") as f:
-                        f.write(foto_init.getbuffer())
-                    upload_media_to_github(path_init)
+                    if atv == "5S" and verificar_limite_diario_atividade(uid, "5S"):
+                        val = 0.0
                     
-                prazo_calculado = (get_time_br() + timedelta(hours=prazo_horas)).strftime("%Y-%m-%d %H:%M:%S")
+                    if st.session_state.get('role') == 'Operador':
+                        val = 0.0
 
-                task = {
-                    'id_task': task_id,
-                    'colaborador_id': str(uid),
-                    'conferente_id': str(conf_id),
-                    'atividade': atv, 'area': loc, 'descricao': obs,
-                    'sku_produto': sku_resultado, 'prioridade': 'Média', 'status': 'Pendente',
-                    'valor': float(val), 'data_criacao': get_time_br().strftime("%d/%m %H:%M"),
-                    'inicio_execucao': None, 'fim_execucao': None,
-                    'tempo_total_min': 0, 'obs_rejeicao': '',
-                    'qtd_lata': 0, 'qtd_pet': 0, 'qtd_oneway': 0, 'qtd_longneck': 0,
-                    'qtd_produzida': 0, 'evidencia_img': path_init,
-                    'prazo': prazo_calculado
-                }
-                add_task_safe(task)
-                st.success("Auto-cadastro realizado!")
+                    path_init = ""
+                    task_id = str(uuid.uuid4())
+                    
+                    if foto_init:
+                        ext = foto_init.name.split('.')[-1].lower()
+                        base_name = generate_media_name(st.session_state['user_name'], atv, sku_resultado, "AUTO_INICIAL")
+                        path_init = f"{IMGS_PATH}/{base_name}.{ext}"
+                        
+                        with open(path_init, "wb") as f:
+                            f.write(foto_init.getbuffer())
+                        upload_media_to_github(path_init)
+                        
+                    prazo_calculado = (get_time_br() + timedelta(hours=prazo_horas)).strftime("%Y-%m-%d %H:%M:%S")
+
+                    task = {
+                        'id_task': task_id,
+                        'colaborador_id': str(uid),
+                        'conferente_id': str(conf_id),
+                        'atividade': atv, 'area': loc, 'descricao': obs,
+                        'sku_produto': sku_resultado, 'prioridade': 'Média', 'status': 'Pendente',
+                        'valor': float(val), 'data_criacao': get_time_br().strftime("%d/%m %H:%M"),
+                        'inicio_execucao': None, 'fim_execucao': None,
+                        'tempo_total_min': 0, 'obs_rejeicao': '',
+                        'qtd_lata': 0, 'qtd_pet': 0, 'qtd_oneway': 0, 'qtd_longneck': 0,
+                        'qtd_produzida': 0, 'evidencia_img': path_init,
+                        'prazo': prazo_calculado
+                    }
+                    add_task_safe(task)
+                    st.success("Auto-cadastro realizado!")
             else:
                 st.error("Preencha os campos obrigatórios.")
 
