@@ -88,6 +88,8 @@ ATIVIDADES_SEM_SKU = [
 ]
 
 SUPERVISORES_PERMITIDOS = ['99849441', '99813623', '99797465']
+# LISTA DE CONFERENTES BLOQUEADOS PARA APROVAÇÃO (Ana Maria, Juliano, Weudes)
+CONFERENTES_BLOQUEADOS = ['05480968', '05471598', '33142384'] 
 LIMITE_RV_OPERADOR = 380.00  
 
 NOVAS_REGRAS = [
@@ -347,8 +349,6 @@ def add_task_safe(task_dict):
     df = get_data("tasks")
     new_row = pd.DataFrame([task_dict])
     
-    # BALA DE PRATA 1: Converte todas as colunas para "object" antes do concat 
-    # para aceitar qualquer tipo de dado (texto, número, nulo)
     for col in df.columns:
         df[col] = df[col].astype(object)
         
@@ -362,8 +362,6 @@ def update_task_safe(task_id, updates):
     if not idx.empty:
         for col, val in updates.items():
             if col in df.columns:
-                # BALA DE PRATA 2: Converte a coluna para "object" para que o Pandas 
-                # e o PyArrow aceitem qualquer valor sem reclamar de tipos estritos
                 df[col] = df[col].astype(object)
                 df.at[idx[0], col] = val
         save_data(df, "tasks")
@@ -377,7 +375,6 @@ def update_rv_safe(user_id, amount):
     idx = df[df['id_temp'] == uid_str].index
     
     if not idx.empty:
-        # BALA DE PRATA 3: Desativa as regras de tipagem estritas para esta coluna
         df['rv_acumulada'] = df['rv_acumulada'].astype(object)
         
         atual = float(df.at[idx[0], 'rv_acumulada'])
@@ -539,16 +536,18 @@ def render_menu_criar_tarefa(users, rules):
                     
                     prazo_calculado = (get_time_br() + timedelta(hours=prazo_horas)).strftime("%Y-%m-%d %H:%M:%S")
 
-                    # SISTEMA ANTI-FRAUDE: Sorteio de outro conferente para aprovar a tarefa
+                    # SISTEMA ANTI-FRAUDE: Sorteio (BLOQUEANDO OS IDs ESPECÍFICOS)
+                    users['id_clean'] = users['id_login'].astype(str).str.strip().apply(lambda x: str(x)[:-2] if str(x).endswith('.0') else str(x))
+                    
                     confs_disponiveis = users[
                         (users['tipo'].str.contains('CONFERENTE|SUPERVISOR', case=False, na=False)) & 
-                        (users['id_login'].astype(str) != str(st.session_state['user_id']))
+                        (users['id_clean'] != str(st.session_state['user_id']).replace('.0', '')) &
+                        (~users['id_clean'].isin(CONFERENTES_BLOQUEADOS))
                     ]
                     
                     if not confs_disponiveis.empty:
                         sorteado_id = str(random.choice(confs_disponiveis['id_login'].tolist()))
                     else:
-                        # Se for o único conferente no sistema, não há outro remédio senão usar o próprio
                         sorteado_id = str(st.session_state['user_id'])
 
                     task = {
@@ -572,10 +571,8 @@ def render_menu_criar_tarefa(users, rules):
 def render_menu_aprovar_tarefas(users, tasks):
     st.title("✅ Aprovação")
     if not tasks.empty:
-        # Puxa apenas as pendentes que não são KPIs
         pends = tasks[(tasks['status'] == 'Aguardando Aprovação') & (~tasks['atividade'].isin(TODOS_KPIS))]
         
-        # 1. FILTRO: Se for Conferente, só vê as tarefas que foram sorteadas para ele
         if st.session_state.get('role') == 'Conferente':
             pends = pends[pends['conferente_id'].astype(str) == str(st.session_state['user_id'])]
         
@@ -588,12 +585,10 @@ def render_menu_aprovar_tarefas(users, tasks):
             k_reject_btn = f"rej_btn_{row['id_task']}_{i}"
             k_reason = f"reason_{row['id_task']}_{i}"
             
-            # Puxar nome de quem executou
             cname_df = users[users['id_login'].astype(str) == str(row['colaborador_id'])]
             nome_usuario = cname_df.iloc[0]['nome'] if not cname_df.empty else 'Desconhecido'
             tipo_usuario = str(cname_df.iloc[0]['tipo']).upper() if not cname_df.empty else ""
             
-            # 2. IDENTIFICAÇÃO DO CONFERENTE: Descobrir o nome do Conferente sorteado para mostrar na tela
             conf_id_str = str(row['conferente_id']).strip()
             if conf_id_str.endswith('.0'): conf_id_str = conf_id_str[:-2]
             
@@ -611,7 +606,6 @@ def render_menu_aprovar_tarefas(users, tasks):
                 st.markdown(f"**{nome_usuario}** - {row['atividade']}")
                 sku_info = row['sku_produto'] if pd.notna(row['sku_produto']) else "-"
                 
-                # Exibe o SKU e de quem é a responsabilidade de aprovar
                 st.caption(f"📦 Material: {sku_info} | 🔍 Sorteado para Aprovar: **{nome_conferente}**")
                 
                 st.write(f"📅 **Criada em:** {row['data_criacao']} | ✅ **Finalizada em:** {row.get('fim_execucao', '-')}")
@@ -1078,7 +1072,13 @@ def interface_colaborador_auto(uid):
     rules = get_data("rules")
     users = get_data("users")
     
-    confs = users[users['tipo'].str.contains('CONFERENTE|SUPERVISOR', case=False, na=False)]['nome'].tolist()
+    users['id_clean'] = users['id_login'].astype(str).str.strip().apply(lambda x: str(x)[:-2] if str(x).endswith('.0') else str(x))
+
+    # LISTA DE SELEÇÃO: Filtra para não exibir os bloqueados
+    confs = users[
+        (users['tipo'].str.contains('CONFERENTE|SUPERVISOR', case=False, na=False)) &
+        (~users['id_clean'].isin(CONFERENTES_BLOQUEADOS))
+    ]['nome'].tolist()
     
     ops = users[~users['tipo'].str.lower().str.contains('conferente|supervisor', na=False, regex=True)]['nome'].tolist()
     
