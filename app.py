@@ -65,7 +65,7 @@ ATIVIDADES_SEM_SKU = [
 
 SUPERVISORES_PERMITIDOS = ['99849441', '99813623', '99797465']
 
-# Trava Robusta para garantir bloqueio (Weudes, Juliano, Ana Maria)
+# Trava Robusta para garantir bloqueio
 CONFERENTES_BLOQUEADOS = ['05480968', '5480968', '05471598', '5471598', '33142384'] 
 
 LIMITE_RV_OPERADOR = 380.00  
@@ -148,21 +148,24 @@ def get_drive_service():
         return build('drive', 'v3', credentials=creds)
     return None
 
-def sync_from_drive(filename):
+def sync_from_drive(filename, force=False):
     path = f"{FILES_PATH}/{filename}.csv"
-    if os.path.exists(path):
+    if not force and os.path.exists(path):
+        # Se não forçada, usa a cache de 15 segundos
         if (time.time() - os.path.getmtime(path)) < 15:
-            return 
+            return True
+            
     try:
         service = get_drive_service()
-        if not service: return
+        if not service: return False
         
         folder_id = st.secrets.get("DRIVE_FOLDER_DATA_ID", "")
-        if not folder_id: return
+        if not folder_id: return False
         
         full_name = f"{filename}.csv"
+        # Ordenar por modifiedTime garante que pegamos sempre a versão mais recente
         query = f"name='{full_name}' and '{folder_id}' in parents and trashed=false"
-        results = service.files().list(q=query, fields="files(id, name)").execute()
+        results = service.files().list(q=query, fields="files(id, name)", orderBy="modifiedTime desc").execute()
         items = results.get('files', [])
 
         if items:
@@ -173,8 +176,11 @@ def sync_from_drive(filename):
                 done = False
                 while not done:
                     status, done = downloader.next_chunk()
-    except Exception:
-        pass 
+            return True
+        return False
+    except Exception as e:
+        # Falhou ao conectar com o Drive
+        return False
 
 def save_to_drive(filename):
     try:
@@ -200,6 +206,7 @@ def save_to_drive(filename):
             file_id = items[0]['id']
             service.files().update(fileId=file_id, media_body=media).execute()
             
+            # Limpa duplicados antigos
             if len(items) > 1:
                 for dup in items[1:]:
                     try: service.files().delete(fileId=dup['id']).execute()
@@ -225,7 +232,7 @@ def upload_media_to_github(file_path):
             except Exception:
                 repo.create_file(file_path, f"Upload Imagem {file_path}", content)
     except Exception as e:
-        st.error(f"Erro ao salvar imagem no GitHub: {e}")
+        pass
 
 def get_media_url(local_path):
     if not local_path or pd.isna(local_path): return ""
@@ -268,8 +275,9 @@ def init_data():
     if not os.path.exists(f"{FILES_PATH}/sku.csv"):
         pd.DataFrame(columns=['codigo', 'descricao']).to_csv(f"{FILES_PATH}/sku.csv", sep=';', index=False, encoding='utf-8-sig')
 
-def get_data(filename):
-    sync_from_drive(filename) 
+def get_data(filename, force_sync=False):
+    # Tenta puxar do Drive primeiro
+    sync_from_drive(filename, force=force_sync) 
     path = f"{FILES_PATH}/{filename}.csv"
     
     if not os.path.exists(path):
@@ -530,7 +538,6 @@ def render_menu_criar_tarefa(users, rules):
 
                     # SISTEMA ANTI-FRAUDE COM BLOQUEIO E TURNOS
                     confs_disponiveis = get_conferentes_disponiveis(users)
-                    # Não sortear para o usuário atual
                     confs_disponiveis = confs_disponiveis[confs_disponiveis['id_clean'] != str(st.session_state['user_id']).replace('.0', '')]
                     
                     if not confs_disponiveis.empty:
@@ -632,17 +639,40 @@ def render_menu_aprovar_tarefas(users, tasks):
                 st.divider()
     else: st.info("Sem tarefas.")
 
-# --- TELAS DO SISTEMA ---
+# --- TELAS DO SISTEMA (LOGIN LIMPO COM BOTÃO DE SYNC) ---
 def login_screen():
     st.markdown("<h1 style='text-align: center; color: #0054a6;'>ProTrack Logística 🚛</h1>", unsafe_allow_html=True)
     col1, col2, col3 = st.columns([1,2,1])
+    
     with col2:
         st.info("Insira o seu ID ou Matrícula")
         lid = st.text_input("ID").strip()
-        if st.button("ENTRAR"):
+        
+        c1, c2 = st.columns([3, 1])
+        with c1:
+            entrar = st.button("ENTRAR", use_container_width=True)
+        with c2:
+            sync = st.button("🔄 Sinc", use_container_width=True, help="Força a leitura atualizada do Google Drive")
+
+        if sync:
+            path = f"{FILES_PATH}/users.csv"
+            if os.path.exists(path):
+                os.remove(path)
+            
+            # Chama a função e força o download (ignorando os 15 segundos)
+            users = get_data("users", force_sync=True)
+            if not users.empty:
+                st.success("Sincronizado com sucesso a partir do Drive!")
+            else:
+                st.error("Falha ao puxar do Drive. Verifique se partilhou a pasta com o e-mail do Service Account.")
+            time.sleep(2)
+            st.rerun()
+
+        if entrar:
             users = get_data("users")
+            
             if users.empty:
-                st.error("Ficheiro de utilizadores vazio ou não encontrado.")
+                st.error("Ficheiro de utilizadores vazio ou não encontrado. Clique em 'Sinc' ou verifique o Drive.")
                 return
 
             users['id_temp'] = users['id_login'].astype(str).str.strip().apply(lambda x: str(x)[:-2] if str(x).endswith('.0') else str(x))
@@ -654,26 +684,8 @@ def login_screen():
                 st.query_params["uid"] = lid_str
                 time.sleep(0.1)
                 st.rerun()
-            else: st.error("Utilizador não cadastrado.")
-
-    # --- MÓDULO DE EMERGÊNCIA ---
-    st.markdown("---")
-    with st.expander("🔧 Administração: Forçar Upload da Base de Utilizadores"):
-        st.warning("O sistema não encontra os utilizadores? Arraste o seu ficheiro CSV aqui para forçar a gravação.")
-        uploaded_file = st.file_uploader("Faça upload do seu ficheiro (users.csv)", type=['csv'])
-        if uploaded_file is not None:
-            if st.button("Gravar Base e Desbloquear Sistema"):
-                try:
-                    df_novo = pd.read_csv(uploaded_file, sep=';', encoding='utf-8-sig', dtype=str)
-                except UnicodeDecodeError:
-                    df_novo = pd.read_csv(uploaded_file, sep=';', encoding='latin1', dtype=str)
-                
-                # Força a gravação no sistema
-                save_data(df_novo, 'users')
-                
-                st.success("✅ Ficheiro atualizado com sucesso e gravado na nuvem! Pode fazer o seu login agora.")
-                time.sleep(2)
-                st.rerun()
+            else: 
+                st.error("Utilizador não cadastrado. Verifique o ID.")
 
 def interface_supervisor():
     st.sidebar.header(f"👮 {st.session_state.get('user_name', 'Sup')}")
