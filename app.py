@@ -130,6 +130,7 @@ def format_currency(value):
 def get_time_br():
     return datetime.utcnow() - timedelta(hours=3)
 
+# Adaptação para a sua nomenclatura de turnos baseada no seu CSV
 def get_turno_atual():
     hora = get_time_br().hour
     if 6 <= hora < 14:
@@ -256,7 +257,6 @@ def init_data():
         df_regras.to_csv(f"{FILES_PATH}/rules.csv", index=False, sep=';', encoding='utf-8-sig')
     
     if not os.path.exists(f"{FILES_PATH}/users.csv"):
-        # Adicionado coluna 'turno'
         pd.DataFrame(columns=['nome', 'id_login', 'tipo', 'rv_acumulada', 'turno']).to_csv(f"{FILES_PATH}/users.csv", sep=';', index=False, encoding='utf-8-sig')
     
     if not os.path.exists(f"{FILES_PATH}/tasks.csv"):
@@ -298,7 +298,7 @@ def get_data(filename):
             
         elif filename == 'users':
             if 'rv_acumulada' not in df.columns: df['rv_acumulada'] = 0.0
-            if 'turno' not in df.columns: df['turno'] = '-' # Garante que não quebre se a coluna não existir
+            if 'turno' not in df.columns: df['turno'] = '-' 
             df['rv_acumulada'] = pd.to_numeric(df['rv_acumulada'].astype(str).str.replace(',', '.'), errors='coerce').fillna(0.0)
             
         elif filename == 'rules':
@@ -315,10 +315,11 @@ def get_data(filename):
 def save_data(df, filename):
     try: 
         df_out = df.copy()
-        if filename == 'users' and 'rv_acumulada' in df_out.columns:
-            df_out['rv_acumulada'] = pd.to_numeric(df_out['rv_acumulada'], errors='coerce').fillna(0.0)
-            df_out['rv_acumulada'] = df_out['rv_acumulada'].apply(lambda x: f"{x:.2f}".replace('.', ','))
-            
+        if filename == 'users':
+            if 'rv_acumulada' in df_out.columns:
+                df_out['rv_acumulada'] = pd.to_numeric(df_out['rv_acumulada'], errors='coerce').fillna(0.0)
+                df_out['rv_acumulada'] = df_out['rv_acumulada'].apply(lambda x: f"{x:.2f}".replace('.', ','))
+
         if filename == 'tasks' and 'valor' in df_out.columns:
             df_out['valor'] = pd.to_numeric(df_out['valor'], errors='coerce').fillna(0.0)
             df_out['valor'] = df_out['valor'].apply(lambda x: f"{x:.2f}".replace('.', ','))
@@ -554,16 +555,12 @@ def render_menu_aprovar_tarefas(users, tasks):
     if not tasks.empty:
         pends = tasks[(tasks['status'] == 'Aguardando Aprovação') & (~tasks['atividade'].isin(TODOS_KPIS))]
         
-        # Filtro de exibição (se for conferente bloqueado, não vê nada. Se for normal, vê as dele).
         if st.session_state.get('role') == 'Conferente':
             meu_id = str(st.session_state['user_id']).replace('.0', '')
             if meu_id in CONFERENTES_BLOQUEADOS:
                 st.error("🔒 O seu acesso para aprovação está suspenso/bloqueado.")
                 return
             pends = pends[pends['conferente_id'].astype(str).str.replace('.0', '') == meu_id]
-        
-        # Correção extra: Se alguma tarefa antiga caiu pra um conferente que agora está bloqueado, 
-        # nós liberamos a visualização dela para os Supervisores assumirem.
         
         if pends.empty: 
             st.info("Nenhuma tarefa pendente para si no momento.")
@@ -586,7 +583,6 @@ def render_menu_aprovar_tarefas(users, tasks):
                 c_df = users[users['id_temp'] == conf_id_str]
                 nome_conferente = c_df.iloc[0]['nome'] if not c_df.empty else f"ID {conf_id_str}"
                 
-                # Se o conferente responsável for um dos bloqueados, alertar o supervisor
                 if conf_id_str in CONFERENTES_BLOQUEADOS:
                     nome_conferente = f"⚠️ {nome_conferente} (BLOQUEADO)"
             
@@ -995,13 +991,12 @@ def interface_colaborador_auto(uid):
     rules = get_data("rules")
     users = get_data("users")
     
-    # Busca quem aprova com base no Bloqueio e no Turno
     confs_df = get_conferentes_disponiveis(users)
     confs = confs_df['nome'].tolist()
     
     ops = users[~users['tipo'].str.lower().str.contains('conferente|supervisor', na=False, regex=True)]['nome'].tolist()
     
-    st.info(f"🕒 Exibindo Aprovadores do **Turno {get_turno_atual()}**")
+    st.info(f"🕒 Exibindo Aprovadores do Turno **{get_turno_atual()}**")
     
     if not confs:
         st.error("Nenhum conferente disponível para o turno atual.")
