@@ -7,6 +7,16 @@ import uuid
 import random
 from github import Github 
 
+# --- CONFIGURAÇÃO DE PASTAS (Caminho Absoluto à prova de erros) ---
+# Colocado logo no topo para o servidor não se perder
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+FILES_PATH = os.path.join(BASE_DIR, "data")
+IMGS_PATH = os.path.join(BASE_DIR, "images")
+
+# Força a criação das pastas imediatamente
+os.makedirs(FILES_PATH, exist_ok=True)
+os.makedirs(IMGS_PATH, exist_ok=True)
+
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="ProTrack Logística", layout="wide", page_icon="🚛")
 
@@ -118,14 +128,6 @@ NOVAS_REGRAS = [
     {"atividade": "RETIRAR PRODUTOS SELO VERMELHO", "valor": 0.00}
 ]
 
-# --- CONFIGURAÇÃO DE PASTAS (Caminho Absoluto à prova de erros) ---
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-FILES_PATH = os.path.join(BASE_DIR, "data")
-IMGS_PATH = os.path.join(BASE_DIR, "images")
-
-os.makedirs(FILES_PATH, exist_ok=True)
-os.makedirs(IMGS_PATH, exist_ok=True)
-
 def format_currency(value):
     try: return f"R$ {float(value):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
     except: return "R$ 0,00"
@@ -154,7 +156,6 @@ def get_drive_service():
 def sync_from_drive(filename, force=False):
     path = os.path.join(FILES_PATH, f"{filename}.csv")
     if not force and os.path.exists(path):
-        # Se não forçada, usa a cache de 15 segundos
         if (time.time() - os.path.getmtime(path)) < 15:
             return True
             
@@ -166,7 +167,6 @@ def sync_from_drive(filename, force=False):
         if not folder_id: return False
         
         full_name = f"{filename}.csv"
-        # Ordenar por modifiedTime garante que pegamos sempre a versão mais recente
         query = f"name='{full_name}' and '{folder_id}' in parents and trashed=false"
         results = service.files().list(q=query, fields="files(id, name)", orderBy="modifiedTime desc").execute()
         items = results.get('files', [])
@@ -182,7 +182,6 @@ def sync_from_drive(filename, force=False):
             return True
         return False
     except Exception as e:
-        # Falhou ao conectar com o Drive
         return False
 
 def save_to_drive(filename):
@@ -209,7 +208,6 @@ def save_to_drive(filename):
             file_id = items[0]['id']
             service.files().update(fileId=file_id, media_body=media).execute()
             
-            # Limpa duplicados antigos
             if len(items) > 1:
                 for dup in items[1:]:
                     try: service.files().delete(fileId=dup['id']).execute()
@@ -229,7 +227,6 @@ def upload_media_to_github(file_path):
         repo = get_github_repo()
         if repo:
             with open(file_path, "rb") as f: content = f.read()
-            # Precisamos do caminho relativo para o Github
             github_path = f"images/{os.path.basename(file_path)}"
             try:
                 contents = repo.get_contents(github_path)
@@ -264,29 +261,29 @@ def generate_media_name(usuario, atividade, sku, sufixo=""):
 
 # --- GERENCIAMENTO DE DADOS ---
 def init_data():
-    # Trava de segurança: Força a criação das pastas exatas no momento de gravar
     os.makedirs(FILES_PATH, exist_ok=True)
-    os.makedirs(IMGS_PATH, exist_ok=True)
     
-    if not os.path.exists(f"{FILES_PATH}/rules.csv"):
-        df_regras = pd.DataFrame(NOVAS_REGRAS)
-        df_regras.to_csv(f"{FILES_PATH}/rules.csv", index=False, sep=';', encoding='utf-8-sig')
+    path_rules = os.path.join(FILES_PATH, "rules.csv")
+    if not os.path.exists(path_rules):
+        pd.DataFrame(NOVAS_REGRAS).to_csv(path_rules, index=False, sep=';', encoding='utf-8-sig')
     
-    if not os.path.exists(f"{FILES_PATH}/users.csv"):
-        pd.DataFrame(columns=['nome', 'id_login', 'tipo', 'rv_acumulada', 'turno']).to_csv(f"{FILES_PATH}/users.csv", sep=';', index=False, encoding='utf-8-sig')
+    path_users = os.path.join(FILES_PATH, "users.csv")
+    if not os.path.exists(path_users):
+        pd.DataFrame(columns=['nome', 'id_login', 'tipo', 'rv_acumulada', 'turno']).to_csv(path_users, sep=';', index=False, encoding='utf-8-sig')
     
-    if not os.path.exists(f"{FILES_PATH}/tasks.csv"):
+    path_tasks = os.path.join(FILES_PATH, "tasks.csv")
+    if not os.path.exists(path_tasks):
         cols = ['id_task', 'colaborador_id', 'conferente_id', 'atividade', 'area', 'descricao', 
                 'sku_produto', 'prioridade', 'status', 'valor', 'data_criacao', 'inicio_execucao', 
                 'fim_execucao', 'tempo_total_min', 'obs_rejeicao', 'qtd_lata', 'qtd_pet', 
                 'qtd_oneway', 'qtd_longneck', 'qtd_produzida', 'evidencia_img', 'prazo']
-        pd.DataFrame(columns=cols).to_csv(f"{FILES_PATH}/tasks.csv", sep=';', index=False, encoding='utf-8-sig')
+        pd.DataFrame(columns=cols).to_csv(path_tasks, sep=';', index=False, encoding='utf-8-sig')
 
-    if not os.path.exists(f"{FILES_PATH}/sku.csv"):
-        pd.DataFrame(columns=['codigo', 'descricao']).to_csv(f"{FILES_PATH}/sku.csv", sep=';', index=False, encoding='utf-8-sig')
+    path_sku = os.path.join(FILES_PATH, "sku.csv")
+    if not os.path.exists(path_sku):
+        pd.DataFrame(columns=['codigo', 'descricao']).to_csv(path_sku, sep=';', index=False, encoding='utf-8-sig')
 
 def get_data(filename, force_sync=False):
-    # Tenta puxar do Drive primeiro
     sync_from_drive(filename, force=force_sync) 
     path = os.path.join(FILES_PATH, f"{filename}.csv")
     
@@ -471,7 +468,6 @@ def get_conferentes_disponiveis(users):
 
     users['id_clean'] = users['id_login'].astype(str).str.strip().apply(lambda x: str(x)[:-2] if str(x).endswith('.0') else str(x))
 
-    # Filtro Anti-Bloqueio (Ignora os banidos)
     confs_base = users[
         (users['tipo'].astype(str).str.upper().str.strip().str.contains('CONFERENTE|SUPERVISOR', na=False)) &
         (~users['id_clean'].isin(CONFERENTES_BLOQUEADOS))
@@ -482,11 +478,9 @@ def get_conferentes_disponiveis(users):
         confs_base['turno_clean'] = confs_base['turno'].astype(str).str.upper().str.strip()
         confs_do_turno = confs_base[confs_base['turno_clean'] == turno_atual]
         
-        # Se encontrou alguém no turno, retorna eles.
         if not confs_do_turno.empty:
             return confs_do_turno
             
-    # Plano B: Se o turno for vazio (ou se o único lá for bloqueado), puxa todos os outros.
     return confs_base
 
 # --- MÓDULOS DE CRIAÇÃO E APROVAÇÃO ---
@@ -547,7 +541,6 @@ def render_menu_criar_tarefa(users, rules):
                     val_para_banco = 0.0 if is_operador else float(val)
                     prazo_calculado = (get_time_br() + timedelta(hours=prazo_horas)).strftime("%Y-%m-%d %H:%M:%S")
 
-                    # SISTEMA ANTI-FRAUDE COM BLOQUEIO E TURNOS
                     confs_disponiveis = get_conferentes_disponiveis(users)
                     confs_disponiveis = confs_disponiveis[confs_disponiveis['id_clean'] != str(st.session_state['user_id']).replace('.0', '')]
                     
@@ -650,7 +643,7 @@ def render_menu_aprovar_tarefas(users, tasks):
                 st.divider()
     else: st.info("Sem tarefas.")
 
-# --- TELAS DO SISTEMA (LOGIN LIMPO COM BOTÃO DE SYNC) ---
+# --- TELAS DO SISTEMA ---
 def login_screen():
     st.markdown("<h1 style='text-align: center; color: #0054a6;'>ProTrack Logística 🚛</h1>", unsafe_allow_html=True)
     col1, col2, col3 = st.columns([1,2,1])
@@ -670,7 +663,6 @@ def login_screen():
             if os.path.exists(path):
                 os.remove(path)
             
-            # Chama a função e força o download (ignorando os 15 segundos)
             users = get_data("users", force_sync=True)
             if not users.empty:
                 st.success("Sincronizado com sucesso a partir do Drive!")
