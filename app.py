@@ -118,8 +118,11 @@ NOVAS_REGRAS = [
     {"atividade": "RETIRAR PRODUTOS SELO VERMELHO", "valor": 0.00}
 ]
 
-FILES_PATH = "data"
-IMGS_PATH = "images"
+# --- CONFIGURAÇÃO DE PASTAS (Caminho Absoluto à prova de erros) ---
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+FILES_PATH = os.path.join(BASE_DIR, "data")
+IMGS_PATH = os.path.join(BASE_DIR, "images")
+
 os.makedirs(FILES_PATH, exist_ok=True)
 os.makedirs(IMGS_PATH, exist_ok=True)
 
@@ -149,7 +152,7 @@ def get_drive_service():
     return None
 
 def sync_from_drive(filename, force=False):
-    path = f"{FILES_PATH}/{filename}.csv"
+    path = os.path.join(FILES_PATH, f"{filename}.csv")
     if not force and os.path.exists(path):
         # Se não forçada, usa a cache de 15 segundos
         if (time.time() - os.path.getmtime(path)) < 15:
@@ -190,7 +193,7 @@ def save_to_drive(filename):
         folder_id = st.secrets.get("DRIVE_FOLDER_DATA_ID", "")
         if not folder_id: return
         
-        file_path = f"{FILES_PATH}/{filename}.csv"
+        file_path = os.path.join(FILES_PATH, f"{filename}.csv")
         full_name = f"{filename}.csv"
 
         query = f"name='{full_name}' and '{folder_id}' in parents and trashed=false"
@@ -226,11 +229,13 @@ def upload_media_to_github(file_path):
         repo = get_github_repo()
         if repo:
             with open(file_path, "rb") as f: content = f.read()
+            # Precisamos do caminho relativo para o Github
+            github_path = f"images/{os.path.basename(file_path)}"
             try:
-                contents = repo.get_contents(file_path)
-                repo.update_file(contents.path, f"Atualizou Imagem {file_path}", content, contents.sha)
+                contents = repo.get_contents(github_path)
+                repo.update_file(contents.path, f"Atualizou Imagem {github_path}", content, contents.sha)
             except Exception:
-                repo.create_file(file_path, f"Upload Imagem {file_path}", content)
+                repo.create_file(github_path, f"Upload Imagem {github_path}", content)
     except Exception as e:
         pass
 
@@ -240,7 +245,8 @@ def get_media_url(local_path):
     
     repo_name = st.secrets.get("GITHUB_REPO", "")
     if repo_name:
-        return f"https://raw.githubusercontent.com/{repo_name}/main/{local_path}"
+        nome_arquivo = os.path.basename(local_path)
+        return f"https://raw.githubusercontent.com/{repo_name}/main/images/{nome_arquivo}"
     return ""
 
 def generate_media_name(usuario, atividade, sku, sufixo=""):
@@ -258,6 +264,10 @@ def generate_media_name(usuario, atividade, sku, sufixo=""):
 
 # --- GERENCIAMENTO DE DADOS ---
 def init_data():
+    # Trava de segurança: Força a criação das pastas exatas no momento de gravar
+    os.makedirs(FILES_PATH, exist_ok=True)
+    os.makedirs(IMGS_PATH, exist_ok=True)
+    
     if not os.path.exists(f"{FILES_PATH}/rules.csv"):
         df_regras = pd.DataFrame(NOVAS_REGRAS)
         df_regras.to_csv(f"{FILES_PATH}/rules.csv", index=False, sep=';', encoding='utf-8-sig')
@@ -278,7 +288,7 @@ def init_data():
 def get_data(filename, force_sync=False):
     # Tenta puxar do Drive primeiro
     sync_from_drive(filename, force=force_sync) 
-    path = f"{FILES_PATH}/{filename}.csv"
+    path = os.path.join(FILES_PATH, f"{filename}.csv")
     
     if not os.path.exists(path):
         init_data()
@@ -331,7 +341,8 @@ def save_data(df, filename):
             df_out['valor'] = pd.to_numeric(df_out['valor'], errors='coerce').fillna(0.0)
             df_out['valor'] = df_out['valor'].apply(lambda x: f"{x:.2f}".replace('.', ','))
         
-        df_out.to_csv(f"{FILES_PATH}/{filename}.csv", index=False, sep=';', encoding='utf-8-sig')
+        path = os.path.join(FILES_PATH, f"{filename}.csv")
+        df_out.to_csv(path, index=False, sep=';', encoding='utf-8-sig')
         save_to_drive(filename)
     except Exception as e: 
         st.error(f"Erro ao guardar {filename}.")
@@ -453,7 +464,7 @@ def interface_regras():
         st.dataframe(df_show.sort_values('Atividade'), use_container_width=True, hide_index=True)
     else: st.warning("Tabela de regras vazia.")
 
-# --- LÓGICA DE FILTRAGEM DE CONFERENTES (COM CORREÇÃO DE FALLBACK) ---
+# --- LÓGICA DE FILTRAGEM DE CONFERENTES ---
 def get_conferentes_disponiveis(users):
     if users.empty or 'tipo' not in users.columns:
         return pd.DataFrame()
@@ -527,7 +538,7 @@ def render_menu_criar_tarefa(users, rules):
                     if foto_upload:
                         ext = foto_upload.name.split('.')[-1].lower()
                         base_name = generate_media_name(colab, atv, sku_resultado, "INICIAL")
-                        path_evidencia = f"{IMGS_PATH}/{base_name}.{ext}"
+                        path_evidencia = os.path.join(IMGS_PATH, f"{base_name}.{ext}")
                         with open(path_evidencia, "wb") as f: f.write(foto_upload.getbuffer())
                         upload_media_to_github(path_evidencia)
 
@@ -655,7 +666,7 @@ def login_screen():
             sync = st.button("🔄 Sinc", use_container_width=True, help="Força a leitura atualizada do Google Drive")
 
         if sync:
-            path = f"{FILES_PATH}/users.csv"
+            path = os.path.join(FILES_PATH, "users.csv")
             if os.path.exists(path):
                 os.remove(path)
             
@@ -1005,7 +1016,7 @@ def interface_colaborador_tarefas(uid):
                         else:
                             ext = foto.name.split('.')[-1].lower()
                             base_name = generate_media_name(st.session_state['user_name'], row['atividade'], row['sku_produto'], "FINAL")
-                            pth = f"{IMGS_PATH}/{base_name}.{ext}"
+                            pth = os.path.join(IMGS_PATH, f"{base_name}.{ext}")
                             with open(pth, "wb") as f: f.write(foto.getbuffer())
                             upload_media_to_github(pth)
                             
@@ -1031,7 +1042,6 @@ def interface_colaborador_auto(uid):
     
     st.info(f"🕒 Exibindo Aprovadores do Turno **{get_turno_atual()}**")
     
-    # Trava de Segurança para não dar UnboundLocalError
     if not confs:
         st.error("Nenhum conferente disponível para o turno atual. Contate o administrador.")
         colab_sel = None
@@ -1080,7 +1090,7 @@ def interface_colaborador_auto(uid):
                     if foto_init:
                         ext = foto_init.name.split('.')[-1].lower()
                         base_name = generate_media_name(st.session_state['user_name'], atv, sku_resultado, "AUTO_INICIAL")
-                        path_init = f"{IMGS_PATH}/{base_name}.{ext}"
+                        path_init = os.path.join(IMGS_PATH, f"{base_name}.{ext}")
                         with open(path_init, "wb") as f: f.write(foto_init.getbuffer())
                         upload_media_to_github(path_init)
                         
