@@ -7,15 +7,15 @@ import uuid
 import random
 from github import Github 
 
+# --- CONFIGURAÇÃO DA PÁGINA ---
+st.set_page_config(page_title="ProTrack Logística", layout="wide", page_icon="🚛")
+
 # --- IMPORTAÇÕES PARA O GOOGLE DRIVE ---
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
 import io
 import mimetypes
-
-# --- CONFIGURAÇÃO DA PÁGINA ---
-st.set_page_config(page_title="ProTrack Logística", layout="wide", page_icon="🚛")
 
 # --- ESTILOS CSS ---
 st.markdown("""
@@ -65,7 +65,7 @@ ATIVIDADES_SEM_SKU = [
 
 SUPERVISORES_PERMITIDOS = ['99849441', '99813623', '99797465']
 
-# Trava Robusta (com e sem zeros à esquerda) para garantir bloqueio
+# Trava Robusta para garantir bloqueio (Weudes, Juliano, Ana Maria)
 CONFERENTES_BLOQUEADOS = ['05480968', '5480968', '05471598', '5471598', '33142384'] 
 
 LIMITE_RV_OPERADOR = 380.00  
@@ -130,7 +130,6 @@ def format_currency(value):
 def get_time_br():
     return datetime.utcnow() - timedelta(hours=3)
 
-# Adaptação para a sua nomenclatura de turnos baseada no seu CSV
 def get_turno_atual():
     hora = get_time_br().hour
     if 6 <= hora < 14:
@@ -446,26 +445,29 @@ def interface_regras():
         st.dataframe(df_show.sort_values('Atividade'), use_container_width=True, hide_index=True)
     else: st.warning("Tabela de regras vazia.")
 
-# --- LÓGICA DE FILTRAGEM DE CONFERENTES ---
+# --- LÓGICA DE FILTRAGEM DE CONFERENTES (COM CORREÇÃO DE FALLBACK) ---
 def get_conferentes_disponiveis(users):
+    if users.empty or 'tipo' not in users.columns:
+        return pd.DataFrame()
+
     users['id_clean'] = users['id_login'].astype(str).str.strip().apply(lambda x: str(x)[:-2] if str(x).endswith('.0') else str(x))
-    
-    # Aplica o filtro Anti-Bloqueio
+
+    # Filtro Anti-Bloqueio (Ignora os banidos)
     confs_base = users[
-        (users['tipo'].str.contains('CONFERENTE|SUPERVISOR', case=False, na=False)) &
+        (users['tipo'].astype(str).str.upper().str.strip().str.contains('CONFERENTE|SUPERVISOR', na=False)) &
         (~users['id_clean'].isin(CONFERENTES_BLOQUEADOS))
     ]
-    
-    # Aplica o filtro de Turnos
+
     turno_atual = get_turno_atual()
     if 'turno' in confs_base.columns:
         confs_base['turno_clean'] = confs_base['turno'].astype(str).str.upper().str.strip()
         confs_do_turno = confs_base[confs_base['turno_clean'] == turno_atual]
         
-        # Se encontrou alguém no turno, retorna eles. Se ninguém estiver no turno, mostra os outros por segurança
+        # Se encontrou alguém no turno, retorna eles.
         if not confs_do_turno.empty:
             return confs_do_turno
             
+    # Plano B: Se o turno for vazio (ou se o único lá for bloqueado), puxa todos os outros.
     return confs_base
 
 # --- MÓDULOS DE CRIAÇÃO E APROVAÇÃO ---
@@ -653,6 +655,25 @@ def login_screen():
                 time.sleep(0.1)
                 st.rerun()
             else: st.error("Utilizador não cadastrado.")
+
+    # --- MÓDULO DE EMERGÊNCIA ---
+    st.markdown("---")
+    with st.expander("🔧 Administração: Forçar Upload da Base de Utilizadores"):
+        st.warning("O sistema não encontra os utilizadores? Arraste o seu ficheiro CSV aqui para forçar a gravação.")
+        uploaded_file = st.file_uploader("Faça upload do seu ficheiro (users.csv)", type=['csv'])
+        if uploaded_file is not None:
+            if st.button("Gravar Base e Desbloquear Sistema"):
+                try:
+                    df_novo = pd.read_csv(uploaded_file, sep=';', encoding='utf-8-sig', dtype=str)
+                except UnicodeDecodeError:
+                    df_novo = pd.read_csv(uploaded_file, sep=';', encoding='latin1', dtype=str)
+                
+                # Força a gravação no sistema
+                save_data(df_novo, 'users')
+                
+                st.success("✅ Ficheiro atualizado com sucesso e gravado na nuvem! Pode fazer o seu login agora.")
+                time.sleep(2)
+                st.rerun()
 
 def interface_supervisor():
     st.sidebar.header(f"👮 {st.session_state.get('user_name', 'Sup')}")
@@ -998,11 +1019,12 @@ def interface_colaborador_auto(uid):
     
     st.info(f"🕒 Exibindo Aprovadores do Turno **{get_turno_atual()}**")
     
+    # Trava de Segurança para não dar UnboundLocalError
     if not confs:
-        st.error("Nenhum conferente disponível para o turno atual.")
-        return
-
-    colab_sel = st.selectbox("Quem aprova?", confs)
+        st.error("Nenhum conferente disponível para o turno atual. Contate o administrador.")
+        colab_sel = None
+    else:
+        colab_sel = st.selectbox("Quem aprova?", confs)
     
     atvs = [a for a in rules['atividade'].tolist() if a not in TODOS_KPIS] if not rules.empty else []
     atv = st.selectbox("Atividade", atvs)
@@ -1027,7 +1049,8 @@ def interface_colaborador_auto(uid):
                 if not foto_init:
                     st.error("⚠️ A foto de evidência inicial é OBRIGATÓRIA para criar a tarefa.")
                 else:
-                    try: conf_id = users[users['nome'] == colab_sel].iloc[0]['id_login']
+                    try: 
+                        conf_id = users[users['nome'] == colab_sel].iloc[0]['id_login']
                     except:
                         st.error("Aprovador inválido")
                         return
@@ -1062,7 +1085,8 @@ def interface_colaborador_auto(uid):
                     }
                     add_task_safe(task)
                     st.success("Auto-cadastro realizado!")
-            else: st.error("Preencha os campos obrigatórios.")
+            else: 
+                st.error("Preencha a Atividade e a Área e certifique-se de que há um aprovador selecionado.")
 
 # --- ROTEAMENTO E PERSISTÊNCIA ---
 if 'user_id' not in st.session_state:
