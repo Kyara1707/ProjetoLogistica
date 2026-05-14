@@ -65,8 +65,8 @@ ATIVIDADES_SEM_SKU = [
 
 SUPERVISORES_PERMITIDOS = ['99849441', '99813623', '99797465']
 
-# Trava Robusta para garantir bloqueio
-CONFERENTES_BLOQUEADOS = ['05480968', '5480968', '05471598', '5471598', '33142384'] 
+# Trava de IDs antigas (O bloqueio novo foca no NOME)
+CONFERENTES_BLOQUEADOS = ['05480968', '5480968', '05471598', '5471598'] 
 
 LIMITE_RV_OPERADOR = 380.00  
 
@@ -130,7 +130,7 @@ def format_currency(value):
 def get_time_br():
     return datetime.utcnow() - timedelta(hours=3)
 
-# --- VERSÃO DOS TURNOS A, B e C ---
+# 1º MODIFICAÇÃO: TURNOS A, B e C
 def get_turno_atual():
     hora = get_time_br().hour
     if 6 <= hora < 14:
@@ -226,7 +226,7 @@ def upload_media_to_github(file_path):
             except Exception:
                 repo.create_file(file_path, f"Upload Imagem {file_path}", content)
     except Exception as e:
-        pass
+        st.error(f"Erro ao salvar imagem no GitHub: {e}")
 
 def get_media_url(local_path):
     if not local_path or pd.isna(local_path): return ""
@@ -448,41 +448,39 @@ def interface_regras():
         st.dataframe(df_show.sort_values('Atividade'), use_container_width=True, hide_index=True)
     else: st.warning("Tabela de regras vazia.")
 
-# --- FILTRAGEM DE CONFERENTES E SEGREGAÇÃO DE TURNOS ---
-def get_conferentes_disponiveis(users):
+# ====================================================================================
+# 2º E 3º MODIFICAÇÕES: BLOQUEIO WEUDES/JULIANO E REVEZAMENTO INTELIGENTE DE TURNOS
+# ====================================================================================
+def get_conferentes_disponiveis(users, criador_id=None):
     if users.empty or 'tipo' not in users.columns:
         return pd.DataFrame()
 
-    users['id_clean'] = users['id_login'].astype(str).str.strip().apply(lambda x: str(x)[:-2] if str(x).endswith('.0') else str(x))
+    # Pega apenas Conferentes e Supervisores
+    confs = users[users['tipo'].astype(str).str.upper().str.contains('CONFERENTE|SUPERVISOR', na=False)].copy()
 
-    # Pega todos os conferentes que não estão bloqueados
-    confs_base = users[
-        (users['tipo'].astype(str).str.upper().str.strip().str.contains('CONFERENTE|SUPERVISOR', na=False)) &
-        (~users['id_clean'].isin(CONFERENTES_BLOQUEADOS))
-    ]
+    # MODIFICAÇÃO 3: Bloqueia WEUDES e JULIANO diretamente pelo Nome
+    confs = confs[~confs['nome'].astype(str).str.upper().str.contains('WEUDES|JULIANO', na=False)]
 
-    # Descobre se estamos no turno A, B ou C
-    turno_atual = get_turno_atual()
-    
-    # Procura a coluna do turno de forma segura (ignora se for maiúscula ou minúscula)
-    col_turno = None
-    if 'turno' in confs_base.columns: 
-        col_turno = 'turno'
-    elif 'Turno' in confs_base.columns: 
-        col_turno = 'Turno'
-    
-    # Se a coluna existir, tenta filtrar
-    if col_turno:
-        confs_base['turno_clean'] = confs_base[col_turno].astype(str).str.upper().str.strip()
-        confs_do_turno = confs_base[confs_base['turno_clean'] == turno_atual]
+    # Filtra por Turno Vigente (Se a coluna Turno existir)
+    if 'turno' in confs.columns:
+        turno_atual = get_turno_atual()
+        confs_turno = confs[confs['turno'].astype(str).str.upper().str.strip() == turno_atual]
+        # Se encontrou pessoas no turno, usa-as. Caso contrário, deixa a lista completa para evitar erros.
+        if not confs_turno.empty:
+            confs = confs_turno
+
+    # MODIFICAÇÃO 2: Impede que a pessoa que cria a tarefa seja o próprio aprovador
+    if criador_id:
+        criador_id_str = str(criador_id).strip().replace('.0', '')
+        confs['id_clean'] = confs['id_login'].astype(str).str.strip().replace('.0', '')
+        confs_diferentes = confs[confs['id_clean'] != criador_id_str]
         
-        # Se encontrou alguém no turno atual, retorna apenas eles
-        if not confs_do_turno.empty:
-            return confs_do_turno
-            
-    # PLANO B: Se a coluna não existir, ou se não houver ninguém no turno atual, 
-    # retorna todos os conferentes disponíveis para o sistema não quebrar!
-    return confs_base
+        # Garante que, se for o único do turno, não fica vazio
+        if not confs_diferentes.empty:
+            confs = confs_diferentes
+
+    return confs
+
 
 # --- MÓDULOS DE CRIAÇÃO E APROVAÇÃO ---
 def render_menu_criar_tarefa(users, rules):
@@ -542,13 +540,13 @@ def render_menu_criar_tarefa(users, rules):
                     val_para_banco = 0.0 if is_operador else float(val)
                     prazo_calculado = (get_time_br() + timedelta(hours=prazo_horas)).strftime("%Y-%m-%d %H:%M:%S")
 
-                    confs_disponiveis = get_conferentes_disponiveis(users)
-                    confs_disponiveis = confs_disponiveis[confs_disponiveis['id_clean'] != str(st.session_state['user_id']).replace('.0', '')]
+                    # Chama o filtro novo, passando o usuário que está a criar para não se sortear a si mesmo
+                    confs_disponiveis = get_conferentes_disponiveis(users, st.session_state.get('user_id'))
                     
                     if not confs_disponiveis.empty:
                         sorteado_id = str(random.choice(confs_disponiveis['id_login'].tolist()))
                     else:
-                        sorteado_id = str(st.session_state['user_id'])
+                        sorteado_id = "SISTEMA"
 
                     task = {
                         'id_task': task_id_new, 'colaborador_id': str(cid), 'conferente_id': sorteado_id,
@@ -570,10 +568,14 @@ def render_menu_aprovar_tarefas(users, tasks):
         pends = tasks[(tasks['status'] == 'Aguardando Aprovação') & (~tasks['atividade'].isin(TODOS_KPIS))]
         
         if st.session_state.get('role') == 'Conferente':
+            nome_usuario = str(st.session_state.get('user_name', '')).upper()
             meu_id = str(st.session_state['user_id']).replace('.0', '')
-            if meu_id in CONFERENTES_BLOQUEADOS:
+            
+            # Bloqueio de aprovação para Weudes, Juliano e IDs banidos
+            if meu_id in CONFERENTES_BLOQUEADOS or 'WEUDES' in nome_usuario or 'JULIANO' in nome_usuario:
                 st.error("🔒 O seu acesso para aprovação está suspenso/bloqueado.")
                 return
+                
             pends = pends[pends['conferente_id'].astype(str).str.replace('.0', '') == meu_id]
         
         if pends.empty: 
@@ -586,7 +588,7 @@ def render_menu_aprovar_tarefas(users, tasks):
             k_reason = f"reason_{row['id_task']}_{i}"
             
             cname_df = users[users['id_login'].astype(str) == str(row['colaborador_id'])]
-            nome_usuario = cname_df.iloc[0]['nome'] if not cname_df.empty else 'Desconhecido'
+            nome_colab_tarefa = cname_df.iloc[0]['nome'] if not cname_df.empty else 'Desconhecido'
             tipo_usuario = str(cname_df.iloc[0]['tipo']).upper() if not cname_df.empty else ""
             
             conf_id_str = str(row['conferente_id']).strip().replace('.0', '')
@@ -597,14 +599,15 @@ def render_menu_aprovar_tarefas(users, tasks):
                 c_df = users[users['id_temp'] == conf_id_str]
                 nome_conferente = c_df.iloc[0]['nome'] if not c_df.empty else f"ID {conf_id_str}"
                 
-                if conf_id_str in CONFERENTES_BLOQUEADOS:
+                # Exibe aviso se a tarefa estiver assinalada a um bloqueado
+                if conf_id_str in CONFERENTES_BLOQUEADOS or 'WEUDES' in nome_conferente.upper() or 'JULIANO' in nome_conferente.upper():
                     nome_conferente = f"⚠️ {nome_conferente} (BLOQUEADO)"
             
             is_operador = 'OPERADOR' in tipo_usuario
             valor_a_pagar = 0.0 if is_operador else float(row['valor'])
             
             with st.container():
-                st.markdown(f"**{nome_usuario}** - {row['atividade']}")
+                st.markdown(f"**{nome_colab_tarefa}** - {row['atividade']}")
                 sku_info = row['sku_produto'] if pd.notna(row['sku_produto']) else "-"
                 
                 st.caption(f"📦 Material: {sku_info} | 🔍 Responsável: **{nome_conferente}**")
@@ -844,8 +847,10 @@ def interface_operador():
             st.dataframe(hist[['data_criacao', 'atividade', 'status', 'valor']], use_container_width=True)
 
 def interface_conferente():
+    nome_usuario = str(st.session_state.get('user_name', '')).upper()
     meu_id = str(st.session_state['user_id']).replace('.0', '')
-    if meu_id in CONFERENTES_BLOQUEADOS:
+    
+    if meu_id in CONFERENTES_BLOQUEADOS or 'WEUDES' in nome_usuario or 'JULIANO' in nome_usuario:
         st.sidebar.error("Acesso de Aprovação Suspenso")
         st.title("🔒 Bloqueio de Sistema")
         st.error("O seu perfil foi restrito para criar ou aprovar tarefas.")
@@ -1005,7 +1010,7 @@ def interface_colaborador_auto(uid):
     rules = get_data("rules")
     users = get_data("users")
     
-    confs_df = get_conferentes_disponiveis(users)
+    confs_df = get_conferentes_disponiveis(users, st.session_state.get('user_id'))
     confs = confs_df['nome'].tolist()
     
     ops = users[~users['tipo'].str.lower().str.contains('conferente|supervisor', na=False, regex=True)]['nome'].tolist()
