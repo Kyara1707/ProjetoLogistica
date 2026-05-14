@@ -130,7 +130,7 @@ def format_currency(value):
 def get_time_br():
     return datetime.utcnow() - timedelta(hours=3)
 
-# 1º MODIFICAÇÃO: TURNOS A, B e C
+# TURNOS A, B e C
 def get_turno_atual():
     hora = get_time_br().hour
     if 6 <= hora < 14:
@@ -448,9 +448,7 @@ def interface_regras():
         st.dataframe(df_show.sort_values('Atividade'), use_container_width=True, hide_index=True)
     else: st.warning("Tabela de regras vazia.")
 
-# ====================================================================================
-# 2º E 3º MODIFICAÇÕES: BLOQUEIO WEUDES/JULIANO E REVEZAMENTO INTELIGENTE DE TURNOS
-# ====================================================================================
+# BLOQUEIO WEUDES/JULIANO E REVEZAMENTO INTELIGENTE DE TURNOS
 def get_conferentes_disponiveis(users, criador_id=None):
     if users.empty or 'tipo' not in users.columns:
         return pd.DataFrame()
@@ -458,7 +456,7 @@ def get_conferentes_disponiveis(users, criador_id=None):
     # Pega apenas Conferentes e Supervisores
     confs = users[users['tipo'].astype(str).str.upper().str.contains('CONFERENTE|SUPERVISOR', na=False)].copy()
 
-    # MODIFICAÇÃO 3: Bloqueia WEUDES e JULIANO diretamente pelo Nome
+    # Bloqueia WEUDES e JULIANO diretamente pelo Nome
     confs = confs[~confs['nome'].astype(str).str.upper().str.contains('WEUDES|JULIANO', na=False)]
 
     # Filtra por Turno Vigente (Se a coluna Turno existir)
@@ -469,7 +467,7 @@ def get_conferentes_disponiveis(users, criador_id=None):
         if not confs_turno.empty:
             confs = confs_turno
 
-    # MODIFICAÇÃO 2: Impede que a pessoa que cria a tarefa seja o próprio aprovador
+    # Impede que a pessoa que cria a tarefa seja o próprio aprovador
     if criador_id:
         criador_id_str = str(criador_id).strip().replace('.0', '')
         confs['id_clean'] = confs['id_login'].astype(str).str.strip().replace('.0', '')
@@ -567,6 +565,7 @@ def render_menu_aprovar_tarefas(users, tasks):
     if not tasks.empty:
         pends = tasks[(tasks['status'] == 'Aguardando Aprovação') & (~tasks['atividade'].isin(TODOS_KPIS))]
         
+        # Se for conferente, filtra apenas as tarefas dele. Se for Supervisor, vê TODAS!
         if st.session_state.get('role') == 'Conferente':
             nome_usuario = str(st.session_state.get('user_name', '')).upper()
             meu_id = str(st.session_state['user_id']).replace('.0', '')
@@ -579,7 +578,7 @@ def render_menu_aprovar_tarefas(users, tasks):
             pends = pends[pends['conferente_id'].astype(str).str.replace('.0', '') == meu_id]
         
         if pends.empty: 
-            st.info("Nenhuma tarefa pendente para si no momento.")
+            st.info("Nenhuma tarefa pendente no momento.")
             return
         
         for i, row in pends.iterrows():
@@ -599,7 +598,6 @@ def render_menu_aprovar_tarefas(users, tasks):
                 c_df = users[users['id_temp'] == conf_id_str]
                 nome_conferente = c_df.iloc[0]['nome'] if not c_df.empty else f"ID {conf_id_str}"
                 
-                # Exibe aviso se a tarefa estiver assinalada a um bloqueado
                 if conf_id_str in CONFERENTES_BLOQUEADOS or 'WEUDES' in nome_conferente.upper() or 'JULIANO' in nome_conferente.upper():
                     nome_conferente = f"⚠️ {nome_conferente} (BLOQUEADO)"
             
@@ -610,7 +608,13 @@ def render_menu_aprovar_tarefas(users, tasks):
                 st.markdown(f"**{nome_colab_tarefa}** - {row['atividade']}")
                 sku_info = row['sku_produto'] if pd.notna(row['sku_produto']) else "-"
                 
-                st.caption(f"📦 Material: {sku_info} | 🔍 Responsável: **{nome_conferente}**")
+                # DESTAQUE: Mostra claramente quem é o responsável original pela aprovação
+                if st.session_state.get('role') == 'Supervisor':
+                    st.info(f"🚨 **Conferente Responsável:** {nome_conferente}")
+                    st.caption(f"📦 Material: {sku_info}")
+                else:
+                    st.caption(f"📦 Material: {sku_info} | 🔍 Responsável: **{nome_conferente}**")
+                
                 st.write(f"📅 **Criada em:** {row['data_criacao']} | ✅ **Finalizada em:** {row.get('fim_execucao', '-')}")
 
                 c1, c2 = st.columns(2)
@@ -912,7 +916,8 @@ def interface_colaborador_tarefas(uid):
             nome_passou = c_df.iloc[0]['nome'] if not c_df.empty else f"ID {conf_id_str}"
         
         with st.expander(f"{row['atividade']} ({row['status']}){prazo_exibicao}", expanded=True):
-            st.write(f"👤 **Passada por:** {nome_passou}")
+            # DESTAQUE: Deixando claro para o Colaborador quem deve aprovar a tarefa
+            st.markdown(f"👤 **Aprovador Responsável:** `{nome_passou}`")
             st.write(f"📅 **Data/Hora Criação:** {row['data_criacao']}")
             st.write(f"📍 **Local:** {row['area']}")
             st.write(f"📦 **Material:** {row['sku_produto']}")
