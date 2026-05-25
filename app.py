@@ -48,7 +48,7 @@ st.markdown("""
 
 # --- CONFIGURAÇÕES GLOBAIS DE ATIVIDADES ---
 ATIVIDADES_POR_CARRO = ["DESCARREGAMENTO DE VAN"]
-ATIVIDADES_SEM_QUANTIDADE = ["AMARRAÇÃO", "MÁQUINA LIMPEZA", "5S"]
+ATIVIDADES_SEM_QUANTIDADE = ["AMARRAÇÃO", "MÁQUINA LIMPEZA"]
 
 TODOS_KPIS = ['EFC', 'EFD', 'TMA', 'RESSUPRIMENTO'] 
 KPI_OPERADOR = ['EFC', 'EFD', 'TMA', 'RESSUPRIMENTO']
@@ -56,7 +56,7 @@ KPI_OPERADOR = ['EFC', 'EFD', 'TMA', 'RESSUPRIMENTO']
 ATIVIDADES_SEM_SKU = [
     "SELO VERMELHO (TOPO/MOLHADO)", "SELO VERMELHO (BASE/VAZAMENTO)", "AMARRAÇÃO", "REFUGO",
     "BLITZ (EMPURRADA)", "BLITZ (CARREG)", "BLITZ (RETORNO)", "REPACK", "DEVOLUÇÃO", "TRANSBORDO",
-    "MÁQUINA LIMPEZA", "5S", "DESCARREGAMENTO DE VAN", "EFC", "EFD", "TMA", "RESSUPRIMENTO",
+    "MÁQUINA LIMPEZA", "DESCARREGAMENTO DE VAN", "EFC", "EFD", "TMA", "RESSUPRIMENTO",
     "CARREGAMENTO FROTA FIXA", "CARREGAMENTO CARRETA", "CARREGAMENTO FRETEIRO",
     "DESCARREGAR MARKETING PLACE", "DESCARREGAR FRETEIRO", "ESTOCAR PRODUTOS PUXADA",
     "ABASTECIMENTO PICKING", "ESTOCAR PRODUTOS SELO VERMELHO", "RETIRAR PRODUTOS SELO VERMELHO",
@@ -86,7 +86,6 @@ NOVAS_REGRAS = [
     {"atividade": "PRÉ PICKING MKT PLACE (REDBULL)", "valor": 1.50},
     {"atividade": "CÂMARA FRIA", "valor": 3.00},
     {"atividade": "MÁQUINA LIMPEZA", "valor": 5.00},
-    {"atividade": "5S", "valor": 14.50},
     {"atividade": "DESCARREGAMENTO DE VAN", "valor": 2.00},
     {"atividade": "EFC", "valor": 3.85},
     {"atividade": "EFD", "valor": 3.85},
@@ -982,9 +981,7 @@ def interface_colaborador_tarefas(uid):
                     if st.session_state.get('role') == 'Operador':
                         val_calc = 0.0
                         st.info("💡 Como Operador, a sua remuneração variável contabiliza exclusivamente os KPIs. Esta tarefa soma R$ 0,00 ao seu saldo.")
-                    elif row['atividade'] == '5S' and val_calc == 0.0:
-                        st.info("💡 Limite de 1 pagamento diário para 5S já atingido. Somente a produtividade será registrada (R$ 0,00).")
-
+                
                     st.write(f"**Valor Final:** {format_currency(val_calc)}")
                     st.markdown("**📸 Foto Obrigatória para concluir**")
                     foto = st.file_uploader("Foto Evidência Final")
@@ -1060,7 +1057,6 @@ def interface_colaborador_auto(uid):
                     val_lookup = rules.loc[rules['atividade'] == atv, 'valor']
                     if not val_lookup.empty: val = val_lookup.values[0]
                     
-                    if atv == "5S" and verificar_limite_diario_atividade(uid, "5S"): val = 0.0
                     if st.session_state.get('role') == 'Operador': val = 0.0
 
                     path_init = ""
