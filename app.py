@@ -521,8 +521,6 @@ def render_menu_criar_tarefa(users, rules):
                         val_lookup = rules.loc[rules['atividade'] == atv, 'valor']
                         if not val_lookup.empty: val = val_lookup.values[0]
 
-                    if atv == "5S" and verificar_limite_diario_atividade(cid, "5S"): val = 0.0
-
                     path_evidencia = ""
                     task_id_new = str(uuid.uuid4())
                     
