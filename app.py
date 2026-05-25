@@ -269,27 +269,32 @@ def init_data():
         pd.DataFrame(columns=['codigo', 'descricao']).to_csv(f"{FILES_PATH}/sku.csv", sep=';', index=False, encoding='utf-8-sig')
 
 def get_data(filename):
-    sync_from_drive(filename) 
     path = f"{FILES_PATH}/{filename}.csv"
-    
-    if not os.path.exists(path):
-        init_data()
-        if not os.path.exists(path): return pd.DataFrame()
+
+    if not os.path.isfile(path):
+        st.error(f"❌ Arquivo não encontrado: {path}")
+        return pd.DataFrame()
 
     try:
-        try:
-            df = pd.read_csv(path, sep=';', encoding='utf-8-sig', dtype=str)
-        except UnicodeDecodeError:
-            df = pd.read_csv(path, sep=';', encoding='latin1', dtype=str)
-        
-        if filename == 'tasks':
-            required = ['id_task', 'colaborador_id', 'status', 'valor', 'atividade']
-            if df.empty or not all(c in df.columns for c in required):
-                 cols = ['id_task', 'colaborador_id', 'conferente_id', 'atividade', 'area', 'descricao', 
-                         'sku_produto', 'prioridade', 'status', 'valor', 'data_criacao', 'inicio_execucao', 
-                         'fim_execucao', 'tempo_total_min', 'obs_rejeicao', 'qtd_lata', 'qtd_pet', 
-                         'qtd_oneway', 'qtd_longneck', 'qtd_produzida', 'evidencia_img', 'prazo']
-                 return pd.DataFrame(columns=cols)
+        df = pd.read_csv(path, sep=';', dtype=str, encoding='latin1')
+
+        if df.empty:
+            st.error(f"❌ {filename}.csv está vazio")
+            return pd.DataFrame()
+
+        # 🔥 CORREÇÃO REAL AQUI
+        if filename == "users":
+            df.columns = ["nome", "id_login", "tipo", "rv_acumulada", "turno"]
+
+            df["id_login"] = df["id_login"].astype(str).str.strip()
+            df["nome"] = df["nome"].astype(str).str.strip()
+            df["tipo"] = df["tipo"].astype(str).str.upper()
+
+        return df
+
+    except Exception as e:
+        st.error(f"Erro ao ler {filename}: {e}")
+        return pd.DataFrame()
             
             if 'prazo' not in df.columns: df['prazo'] = '2099-12-31 23:59:59'
             df['valor'] = pd.to_numeric(df['valor'].astype(str).str.replace(',', '.'), errors='coerce').fillna(0.0)
