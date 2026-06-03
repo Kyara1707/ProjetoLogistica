@@ -1,3 +1,6 @@
+Aqui tem o **código completo e atualizado** com todas as modificações consolidadas. Pode copiar este bloco inteiro e substituir o conteúdo do seu ficheiro .py.
+As melhorias de turnos, bloqueio de utilizadores, revezamento inteligente, e a visualização clara do **Aprovador Responsável** (tanto para o Colaborador quanto para os Supervisores em paralelo) já estão todas integradas aqui.
+```python
 import streamlit as st
 import pandas as pd
 import os
@@ -48,7 +51,7 @@ st.markdown("""
 
 # --- CONFIGURAÇÕES GLOBAIS DE ATIVIDADES ---
 ATIVIDADES_POR_CARRO = ["DESCARREGAMENTO DE VAN"]
-ATIVIDADES_SEM_QUANTIDADE = ["AMARRAÇÃO", "MÁQUINA LIMPEZA"]
+ATIVIDADES_SEM_QUANTIDADE = ["AMARRAÇÃO", "MÁQUINA LIMPEZA", "5S"]
 
 TODOS_KPIS = ['EFC', 'EFD', 'TMA', 'RESSUPRIMENTO'] 
 KPI_OPERADOR = ['EFC', 'EFD', 'TMA', 'RESSUPRIMENTO']
@@ -56,7 +59,7 @@ KPI_OPERADOR = ['EFC', 'EFD', 'TMA', 'RESSUPRIMENTO']
 ATIVIDADES_SEM_SKU = [
     "SELO VERMELHO (TOPO/MOLHADO)", "SELO VERMELHO (BASE/VAZAMENTO)", "AMARRAÇÃO", "REFUGO",
     "BLITZ (EMPURRADA)", "BLITZ (CARREG)", "BLITZ (RETORNO)", "REPACK", "DEVOLUÇÃO", "TRANSBORDO",
-    "MÁQUINA LIMPEZA", "DESCARREGAMENTO DE VAN", "EFC", "EFD", "TMA", "RESSUPRIMENTO",
+    "MÁQUINA LIMPEZA", "5S", "DESCARREGAMENTO DE VAN", "EFC", "EFD", "TMA", "RESSUPRIMENTO",
     "CARREGAMENTO FROTA FIXA", "CARREGAMENTO CARRETA", "CARREGAMENTO FRETEIRO",
     "DESCARREGAR MARKETING PLACE", "DESCARREGAR FRETEIRO", "ESTOCAR PRODUTOS PUXADA",
     "ABASTECIMENTO PICKING", "ESTOCAR PRODUTOS SELO VERMELHO", "RETIRAR PRODUTOS SELO VERMELHO",
@@ -86,6 +89,7 @@ NOVAS_REGRAS = [
     {"atividade": "PRÉ PICKING MKT PLACE (REDBULL)", "valor": 1.50},
     {"atividade": "CÂMARA FRIA", "valor": 3.00},
     {"atividade": "MÁQUINA LIMPEZA", "valor": 5.00},
+    {"atividade": "5S", "valor": 14.50},
     {"atividade": "DESCARREGAMENTO DE VAN", "valor": 2.00},
     {"atividade": "EFC", "valor": 3.85},
     {"atividade": "EFD", "valor": 3.85},
@@ -269,32 +273,27 @@ def init_data():
         pd.DataFrame(columns=['codigo', 'descricao']).to_csv(f"{FILES_PATH}/sku.csv", sep=';', index=False, encoding='utf-8-sig')
 
 def get_data(filename):
+    sync_from_drive(filename) 
     path = f"{FILES_PATH}/{filename}.csv"
-
-    if not os.path.isfile(path):
-        st.error(f"❌ Arquivo não encontrado: {path}")
-        return pd.DataFrame()
+    
+    if not os.path.exists(path):
+        init_data()
+        if not os.path.exists(path): return pd.DataFrame()
 
     try:
-        df = pd.read_csv(path, sep=';', dtype=str, encoding='latin1')
-
-        if df.empty:
-            st.error(f"❌ {filename}.csv está vazio")
-            return pd.DataFrame()
-
-        # 🔥 CORREÇÃO REAL AQUI
-        if filename == "users":
-            df.columns = ["nome", "id_login", "tipo", "rv_acumulada", "turno"]
-
-            df["id_login"] = df["id_login"].astype(str).str.strip()
-            df["nome"] = df["nome"].astype(str).str.strip()
-            df["tipo"] = df["tipo"].astype(str).str.upper()
-
-        return df
-
-    except Exception as e:
-        st.error(f"Erro ao ler {filename}: {e}")
-        return pd.DataFrame()
+        try:
+            df = pd.read_csv(path, sep=';', encoding='utf-8-sig', dtype=str)
+        except UnicodeDecodeError:
+            df = pd.read_csv(path, sep=';', encoding='latin1', dtype=str)
+        
+        if filename == 'tasks':
+            required = ['id_task', 'colaborador_id', 'status', 'valor', 'atividade']
+            if df.empty or not all(c in df.columns for c in required):
+                 cols = ['id_task', 'colaborador_id', 'conferente_id', 'atividade', 'area', 'descricao', 
+                         'sku_produto', 'prioridade', 'status', 'valor', 'data_criacao', 'inicio_execucao', 
+                         'fim_execucao', 'tempo_total_min', 'obs_rejeicao', 'qtd_lata', 'qtd_pet', 
+                         'qtd_oneway', 'qtd_longneck', 'qtd_produzida', 'evidencia_img', 'prazo']
+                 return pd.DataFrame(columns=cols)
             
             if 'prazo' not in df.columns: df['prazo'] = '2099-12-31 23:59:59'
             df['valor'] = pd.to_numeric(df['valor'].astype(str).str.replace(',', '.'), errors='coerce').fillna(0.0)
@@ -524,6 +523,8 @@ def render_menu_criar_tarefa(users, rules):
                     if not rules.empty:
                         val_lookup = rules.loc[rules['atividade'] == atv, 'valor']
                         if not val_lookup.empty: val = val_lookup.values[0]
+
+                    if atv == "5S" and verificar_limite_diario_atividade(cid, "5S"): val = 0.0
 
                     path_evidencia = ""
                     task_id_new = str(uuid.uuid4())
@@ -986,7 +987,9 @@ def interface_colaborador_tarefas(uid):
                     if st.session_state.get('role') == 'Operador':
                         val_calc = 0.0
                         st.info("💡 Como Operador, a sua remuneração variável contabiliza exclusivamente os KPIs. Esta tarefa soma R$ 0,00 ao seu saldo.")
-                
+                    elif row['atividade'] == '5S' and val_calc == 0.0:
+                        st.info("💡 Limite de 1 pagamento diário para 5S já atingido. Somente a produtividade será registrada (R$ 0,00).")
+
                     st.write(f"**Valor Final:** {format_currency(val_calc)}")
                     st.markdown("**📸 Foto Obrigatória para concluir**")
                     foto = st.file_uploader("Foto Evidência Final")
@@ -1062,6 +1065,7 @@ def interface_colaborador_auto(uid):
                     val_lookup = rules.loc[rules['atividade'] == atv, 'valor']
                     if not val_lookup.empty: val = val_lookup.values[0]
                     
+                    if atv == "5S" and verificar_limite_diario_atividade(uid, "5S"): val = 0.0
                     if st.session_state.get('role') == 'Operador': val = 0.0
 
                     path_init = ""
@@ -1103,3 +1107,5 @@ else:
     elif r == 'Conferente': interface_conferente()
     elif r == 'Colaborador': interface_operador()
     else: do_logout()
+
+```
