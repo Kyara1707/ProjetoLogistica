@@ -1,6 +1,3 @@
-Aqui tem o **código completo e atualizado** com todas as modificações consolidadas. Pode copiar este bloco inteiro e substituir o conteúdo do seu ficheiro .py.
-As melhorias de turnos, bloqueio de utilizadores, revezamento inteligente, e a visualização clara do **Aprovador Responsável** (tanto para o Colaborador quanto para os Supervisores em paralelo) já estão todas integradas aqui.
-```python
 import streamlit as st
 import pandas as pd
 import os
