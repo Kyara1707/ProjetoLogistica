@@ -1105,4 +1105,4 @@ else:
     elif r == 'Colaborador': interface_operador()
     else: do_logout()
 
-```
+
