@@ -1,6 +1,3 @@
-Entendido! Faltou trazer de volta os mecanismos de segurança da tela de login: o **botão de Sincronização manual** com o erro amigável do Drive e a **caixa oculta de Administração** para forçar o upload do users.csv via interface caso o Drive falhe completamente.
-Aqui está o **código completo e unificado**, com todas as correções anteriores mantidas e essas ferramentas de recuperação adicionadas exatamente como nas fotos:
-```python
 import streamlit as st
 import pandas as pd
 import os
@@ -1056,4 +1053,4 @@ else:
     elif r == 'Colaborador': interface_operador()
     else: do_logout()
 
-```
+
