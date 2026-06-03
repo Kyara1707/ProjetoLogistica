@@ -1,3 +1,6 @@
+Entendido! Faltou trazer de volta os mecanismos de segurança da tela de login: o **botão de Sincronização manual** com o erro amigável do Drive e a **caixa oculta de Administração** para forçar o upload do users.csv via interface caso o Drive falhe completamente.
+Aqui está o **código completo e unificado**, com todas as correções anteriores mantidas e essas ferramentas de recuperação adicionadas exatamente como nas fotos:
+```python
 import streamlit as st
 import pandas as pd
 import os
@@ -121,7 +124,7 @@ IMGS_PATH = "images"
 os.makedirs(FILES_PATH, exist_ok=True)
 os.makedirs(IMGS_PATH, exist_ok=True)
 
-# --- FUNÇÃO DE LIMPEZA DE IDS (IGNORA ZEROS À ESQUERDA E ESPAÇOS) ---
+# --- FUNÇÃO DE LIMPEZA DE IDS ---
 def clean_id(x):
     if pd.isna(x): return ""
     s = str(x).strip().replace('.0', '')
@@ -149,15 +152,15 @@ def get_drive_service():
         return build('drive', 'v3', credentials=creds)
     return None
 
-def sync_from_drive(filename):
+def sync_from_drive(filename, force=False):
     path = f"{FILES_PATH}/{filename}.csv"
-    if os.path.exists(path):
-        if (time.time() - os.path.getmtime(path)) < 15: return 
+    if os.path.exists(path) and not force:
+        if (time.time() - os.path.getmtime(path)) < 15: return True
     try:
         service = get_drive_service()
-        if not service: return
+        if not service: return False
         folder_id = st.secrets.get("DRIVE_FOLDER_DATA_ID", "")
-        if not folder_id: return
+        if not folder_id: return False
         
         full_name = f"{filename}.csv"
         query = f"name='{full_name}' and '{folder_id}' in parents and trashed=false"
@@ -172,7 +175,10 @@ def sync_from_drive(filename):
                 done = False
                 while not done:
                     status, done = downloader.next_chunk()
-    except Exception: pass 
+            return True
+        return False
+    except Exception: 
+        return False
 
 def save_to_drive(filename):
     try:
@@ -201,7 +207,7 @@ def save_to_drive(filename):
                     except: pass
     except Exception: pass
 
-# --- FUNÇÕES DE IMAGEM PARA O GITHUB ---
+# --- FUNÇÕES DO GITHUB ---
 def get_github_repo():
     if "GITHUB_TOKEN" in st.secrets and "GITHUB_REPO" in st.secrets:
         g = Github(st.secrets["GITHUB_TOKEN"])
@@ -228,9 +234,9 @@ def get_media_url(local_path):
     if repo_name: return f"https://raw.githubusercontent.com/{repo_name}/main/{local_path}"
     return ""
 
-def generate_media_name(usuario, atividade, sku, sufixo=""):
+def generate_media_name(usuario, activity, sku, sufixo=""):
     nome_safe = str(usuario).strip().replace(" ", "_").upper()
-    atv_safe = str(atividade).strip().replace(" ", "_").replace("/", "-").upper()
+    atv_safe = str(activity).strip().replace(" ", "_").replace("/", "-").upper()
     if not sku or sku in ["-", "N/A"]: sku_safe = "SEM_SKU"
     else: sku_safe = str(sku).split(" - ")[0].strip().replace(" ", "_").upper()
     data_safe = get_time_br().strftime("%d%m%Y_%H%M%S")
@@ -406,31 +412,67 @@ def login_screen():
     with col2:
         st.info("Insira o seu ID ou Matrícula")
         lid = st.text_input("ID").strip()
-        if st.button("ENTRAR"):
-            users = get_data("users")
-            if users.empty:
-                st.error("❌ Ficheiro de utilizadores vazio ou não encontrado no local/Drive.")
-                return
-
-            users['id_temp'] = users['id_login'].apply(clean_id)
-            lid_str = clean_id(lid)
-            
-            user = users[users['id_temp'] == lid_str]
-            if not user.empty:
-                id_original = str(user.iloc[0]['id_login']).replace('.0', '')
-                st.query_params["uid"] = id_original
-                time.sleep(0.1)
+        
+        # Alinhamento dos botões ENTRAR e Sinc lado a lado conforme imagem
+        c_btn1, c_btn2 = st.columns([3, 1])
+        entrar_clicado = c_btn1.button("ENTRAR", use_container_width=True)
+        sinc_clicado = c_btn2.button("🔄 Sinc", help="Força a leitura atualizada do Google Drive", use_container_width=True)
+        
+        if sinc_clicado:
+            sucesso_sinc = sync_from_drive("users", force=True)
+            if sucesso_sinc:
+                st.success("✅ Sincronização executada com sucesso!")
+                time.sleep(0.5)
                 st.rerun()
             else:
-                st.error("❌ Utilizador não cadastrado.")
-                with st.expander("🔍 Clique aqui para inspecionar os IDs detetados no ficheiro"):
-                    st.write("Colunas encontradas no ficheiro:", list(users.columns))
-                    if 'id_login' in users.columns:
-                        st.write("Lista de IDs originais no ficheiro:", users['id_login'].tolist())
-                        st.write("Lista de IDs limpos pelo sistema:", users['id_temp'].tolist())
-                        st.write("O ID que você digitou (limpo):", lid_str)
+                st.error("Falha ao puxar do Drive. Verifique se partilhou a pasta com o e-mail do Service Account.")
+
+        users = get_data("users")
+        
+        if entrar_clicado:
+            if users.empty:
+                st.error("❌ Ficheiro de utilizadores vazio ou não encontrado no local/Drive.")
+            else:
+                users['id_temp'] = users['id_login'].apply(clean_id)
+                lid_str = clean_id(lid)
+                user = users[users['id_temp'] == lid_str]
+                if not user.empty:
+                    id_original = str(user.iloc[0]['id_login']).replace('.0', '')
+                    st.query_params["uid"] = id_original
+                    time.sleep(0.1)
+                    st.rerun()
+                else:
+                    st.error("❌ Utilizador não cadastrado.")
+                    with st.expander("🔍 Clique aqui para inspecionar os IDs detetados no ficheiro"):
+                        st.write("Colunas encontradas:", list(users.columns))
+                        if 'id_login' in users.columns:
+                            st.write("IDs originais:", users['id_login'].tolist())
+                            st.write("IDs limpos:", users['id_temp'].tolist())
+                            st.write("Seu ID digitado (limpo):", lid_str)
+
+        # Mecanismo Administrativo de Recuperação / Forçar Upload Manual conforme imagem
+        st.markdown("<br><br>", unsafe_allow_html=True)
+        with st.expander("🔧 Administração: Forçar Upload da Base de Utilizadores"):
+            st.warning("O sistema não encontra os utilizadores? Arraste o seu ficheiro CSV aqui para forçar a gravação.")
+            st.write("Faça upload do seu ficheiro (users.csv)")
+            uploaded_file = st.file_uploader("Upload", type=["csv"], label_visibility="collapsed")
+            if uploaded_file is not None:
+                try:
+                    try: df_manual = pd.read_csv(uploaded_file, sep=';', dtype=str, encoding='utf-8-sig')
+                    except Exception: df_manual = pd.read_csv(uploaded_file, sep=';', dtype=str, encoding='latin1')
+                    
+                    rename_dict = {'Colaborador': 'nome', 'Id_colaborador': 'id_login', 'Cargo': 'tipo', 'Turno': 'turno'}
+                    df_manual.rename(columns=rename_dict, inplace=True)
+                    
+                    if 'id_login' in df_manual.columns:
+                        save_data(df_manual, "users")
+                        st.success("✅ Base de utilizadores carregada e salva localmente com sucesso!")
+                        time.sleep(1)
+                        st.rerun()
                     else:
-                        st.error("A coluna 'Id_colaborador' não foi encontrada! Verifique o cabeçalho do seu CSV.")
+                        st.error("❌ Erro: O arquivo precisa conter a coluna 'Id_colaborador'.")
+                except Exception as e:
+                    st.error(f"Erro ao ler arquivo: {e}")
 
 # --- TELA DE REGRAS ---
 def interface_regras():
@@ -889,7 +931,7 @@ def interface_colaborador_tarefas(uid):
                 except Exception: tempo_final = 1
                 
                 if tempo_final < 1: tempo_final = 1
-                st.info(f"⏱️ Tempo calculated: **{tempo_final} min** (Automático)")
+                st.info(f"⏱️ Tempo calculado: **{tempo_final} min** (Automático)")
 
                 with st.form(f"form_fim_{row['id_task']}"):
                     qtd = 1.0
@@ -970,7 +1012,7 @@ def interface_colaborador_auto(uid):
         
         if st.form_submit_button("CRIAR TAREFA"):
             if colab_sel and atv:
-                if not foto_init: st.error("⚠️ A foto de evidência inicial é OBRIGATÓRIA.")
+                if not foto_init: st.error("⚠️ A foto de segurança inicial é OBRIGATÓRIA.")
                 else:
                     try: conf_id = users[users['nome'] == colab_sel].iloc[0]['id_login']
                     except: return
@@ -1013,3 +1055,5 @@ else:
     elif r == 'Conferente': interface_conferente()
     elif r == 'Colaborador': interface_operador()
     else: do_logout()
+
+```
