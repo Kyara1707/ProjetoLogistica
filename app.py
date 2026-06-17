@@ -5,17 +5,26 @@ from datetime import datetime, timedelta
 import time
 import uuid
 import random
+import io
 from github import Github 
+
+## --- SHAREPOINT ---
+from office365.sharepoint.client_context import ClientContext
+from office365.runtime.auth.user_credential import UserCredential
+
+# ✅ CONFIGURAÇÃO SHAREPOINT (Fonte de Verdade)
+SHAREPOINT_SITE = "https://anheuserbuschinbev.sharepoint.com/sites/apoioolinda"
+SHAREPOINT_FOLDER = "/sites/apoioolinda/Documentos Compartilhados/ProTrack"
+
+SP_USER = os.getenv("SP_USER")
+SP_PASS = os.getenv("SP_PASS")
+
+# ⚠️ FALLBACK LOCAL (apenas para imagens, não para dados)
+IMGS_PATH = "images"
+os.makedirs(IMGS_PATH, exist_ok=True)
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="ProTrack Logística", layout="wide", page_icon="🚛")
-
-# --- IMPORTAÇÕES PARA O GOOGLE DRIVE ---
-from google.oauth2 import service_account
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
-import io
-import mimetypes
 
 # --- ESTILOS CSS ---
 st.markdown("""
@@ -116,12 +125,7 @@ NOVAS_REGRAS = [
     {"atividade": "RETIRAR PRODUTOS SELO VERMELHO", "valor": 0.00}
 ]
 
-FILES_PATH = "data"
-IMGS_PATH = "images"
-os.makedirs(FILES_PATH, exist_ok=True)
-os.makedirs(IMGS_PATH, exist_ok=True)
-
-# --- FUNÇÃO DE LIMPEZA DE IDS ---
+# --- FUNÇÕES BÁSICAS ---
 def clean_id(x):
     if pd.isna(x): return ""
     s = str(x).strip().replace('.0', '')
@@ -140,71 +144,164 @@ def get_turno_atual():
     elif 14 <= hora < 22: return 'B'
     else: return 'C'
 
-# --- INTEGRAÇÃO DIRETA COM O GOOGLE DRIVE ---
-def get_drive_service():
-    if "gcp_service_account" in st.secrets:
-        creds_dict = dict(st.secrets["gcp_service_account"])
-        SCOPES = ['https://www.googleapis.com/auth/drive']
-        creds = service_account.Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
-        return build('drive', 'v3', credentials=creds)
-    return None
-
-def sync_from_drive(filename, force=False):
-    path = f"{FILES_PATH}/{filename}.csv"
-    if os.path.exists(path) and not force:
-        if (time.time() - os.path.getmtime(path)) < 15: return True
+# --- SHAREPOINT CONNECTION ---
+def get_sharepoint_context():
+    """🔗 Conecta ao SharePoint usando credenciais"""
     try:
-        service = get_drive_service()
-        if not service: return False
-        folder_id = st.secrets.get("DRIVE_FOLDER_DATA_ID", "")
-        if not folder_id: return False
-        
-        full_name = f"{filename}.csv"
-        query = f"name='{full_name}' and '{folder_id}' in parents and trashed=false"
-        results = service.files().list(q=query, fields="files(id, name)").execute()
-        items = results.get('files', [])
+        if not SP_USER or not SP_PASS:
+            st.error("❌ Credenciais do SharePoint não configuradas! Adicione SP_USER e SP_PASS nos Secrets do Streamlit.")
+            return None
+            
+        ctx = ClientContext(SHAREPOINT_SITE).with_credentials(
+            UserCredential(SP_USER, SP_PASS)
+        )
+        return ctx
+    except Exception as e:
+        st.error(f"❌ Erro ao conectar SharePoint: {e}")
+        return None
 
-        if items:
-            file_id = items[0]['id']
-            request = service.files().get_media(fileId=file_id)
-            with open(path, 'wb') as f:
-                downloader = MediaIoBaseDownload(f, request)
-                done = False
-                while not done:
-                    status, done = downloader.next_chunk()
-            return True
-        return False
-    except Exception: 
-        return False
+@st.cache_resource
+def init_sharepoint_connection():
+    """✅ Inicializa conexão ao SharePoint (cached para performance)"""
+    return get_sharepoint_context()
 
-def save_to_drive(filename):
+# --- FUNÇÕES DE LEITURA/ESCRITA NO SHAREPOINT ---
+def read_csv_from_sharepoint(filename):
+    """📥 Lê CSV diretamente do SharePoint (FONTE DE VERDADE)"""
     try:
-        service = get_drive_service()
-        if not service: return
-        folder_id = st.secrets.get("DRIVE_FOLDER_DATA_ID", "")
-        if not folder_id: return
+        ctx = init_sharepoint_connection()
+        if not ctx:
+            st.warning(f"⚠️ Sem conexão ao SharePoint. Verificando arquivo local como fallback...")
+            return None
+            
+        file_path = f"{SHAREPOINT_FOLDER}/{filename}.csv"
         
-        file_path = f"{FILES_PATH}/{filename}.csv"
-        full_name = f"{filename}.csv"
+        try:
+            file_obj = ctx.web.get_file_by_server_relative_url(file_path)
+            response = file_obj.download()
+            ctx.execute_query()
+            
+            bytes_io = io.BytesIO(response.value)
+            
+            try:
+                df = pd.read_csv(bytes_io, sep=';', encoding='utf-8-sig', dtype=str)
+            except UnicodeDecodeError:
+                bytes_io.seek(0)
+                df = pd.read_csv(bytes_io, sep=';', encoding='latin1', dtype=str)
+                
+            return df
+        except Exception as e:
+            st.warning(f"⚠️ Arquivo {filename}.csv não encontrado no SharePoint.")
+            return None
+        
+    except Exception as e:
+        st.warning(f"⚠️ Erro ao ler {filename} do SharePoint: {e}")
+        return None
 
-        query = f"name='{full_name}' and '{folder_id}' in parents and trashed=false"
-        results = service.files().list(q=query, fields="files(id, name)").execute()
-        items = results.get('files', [])
-        media = MediaFileUpload(file_path, mimetype='text/csv', resumable=True)
+def write_csv_to_sharepoint(df, filename):
+    """📤 Escreve CSV diretamente no SharePoint"""
+    try:
+        ctx = init_sharepoint_connection()
+        if not ctx:
+            st.error("❌ Sem conexão ao SharePoint! Não foi possível salvar os dados.")
+            return False
+            
+        buffer = io.BytesIO()
+        df.to_csv(buffer, index=False, sep=';', encoding='utf-8-sig')
+        buffer.seek(0)
+        
+        try:
+            file_obj = ctx.web.get_file_by_server_relative_url(f"{SHAREPOINT_FOLDER}/{filename}.csv")
+            file_obj.delete_object().execute_query()
+        except:
+            pass
+        
+        folder = ctx.web.get_folder_by_server_relative_url(SHAREPOINT_FOLDER)
+        folder.upload_file(f"{filename}.csv", buffer.getvalue()).execute_query()
+        return True
+        
+    except Exception as e:
+        st.error(f"❌ Erro ao salvar {filename} no SharePoint: {e}")
+        return False
 
-        if not items:
-            file_metadata = {'name': full_name, 'parents': [folder_id]}
-            service.files().create(body=file_metadata, media_body=media, fields='id').execute()
+# --- FUNÇÃO get_data() - SHAREPOINT COMO FONTE DE VERDADE ---
+def get_data(filename):
+    """✅ Lê dados do SharePoint (fonte de verdade)"""
+    
+    df = read_csv_from_sharepoint(filename)
+    
+    if df is None or df.empty:
+        if filename == 'rules':
+            return pd.DataFrame(NOVAS_REGRAS)
+        elif filename == 'users':
+            return pd.DataFrame(columns=['nome', 'id_login', 'tipo', 'rv_acumulada', 'turno'])
+        elif filename == 'tasks':
+            cols = ['id_task', 'colaborador_id', 'conferente_id', 'atividade', 'area', 'descricao', 
+                    'sku_produto', 'prioridade', 'status', 'valor', 'data_criacao', 'inicio_execucao', 
+                    'fim_execucao', 'tempo_total_min', 'obs_rejeicao', 'qtd_lata', 'qtd_pet', 
+                    'qtd_oneway', 'qtd_longneck', 'qtd_produzida', 'evidencia_img', 'prazo']
+            return pd.DataFrame(columns=cols)
+        elif filename == 'sku':
+            return pd.DataFrame(columns=['codigo', 'descricao'])
         else:
-            file_id = items[0]['id']
-            service.files().update(fileId=file_id, media_body=media).execute()
-            if len(items) > 1:
-                for dup in items[1:]:
-                    try: service.files().delete(fileId=dup['id']).execute()
-                    except: pass
-    except Exception: pass
+            return pd.DataFrame()
 
-# --- FUNÇÕES DO GITHUB ---
+    if filename == 'tasks':
+        required = ['id_task', 'colaborador_id', 'status', 'valor', 'atividade']
+        if not all(c in df.columns for c in required):
+            cols = ['id_task', 'colaborador_id', 'conferente_id', 'atividade', 'area', 'descricao', 
+                    'sku_produto', 'prioridade', 'status', 'valor', 'data_criacao', 'inicio_execucao', 
+                    'fim_execucao', 'tempo_total_min', 'obs_rejeicao', 'qtd_lata', 'qtd_pet', 
+                    'qtd_oneway', 'qtd_longneck', 'qtd_produzida', 'evidencia_img', 'prazo']
+            return pd.DataFrame(columns=cols)
+        
+        if 'prazo' not in df.columns: 
+            df['prazo'] = '2099-12-31 23:59:59'
+        
+        df['valor'] = pd.to_numeric(df['valor'].astype(str).str.replace(',', '.'), errors='coerce').fillna(0.0)
+        df['tempo_total_min'] = pd.to_numeric(df['tempo_total_min'].astype(str).str.replace(',', '.'), errors='coerce').fillna(0.0)
+        
+    elif filename == 'users':
+        df.rename(columns={'Colaborador': 'nome', 'Id_colaborador': 'id_login', 'Cargo': 'tipo', 'Turno': 'turno'}, inplace=True)
+        if 'rv_acumulada' not in df.columns: 
+            df['rv_acumulada'] = 0.0
+        if 'turno' not in df.columns: 
+            df['turno'] = '-'
+        df['rv_acumulada'] = pd.to_numeric(df['rv_acumulada'].astype(str).str.replace(',', '.'), errors='coerce').fillna(0.0)
+        
+    elif filename == 'rules':
+        df['valor'] = pd.to_numeric(df['valor'].astype(str).str.replace(',', '.'), errors='coerce').fillna(0.0)
+
+    return df
+
+# --- FUNÇÃO save_data() - SHAREPOINT COMO FONTE DE VERDADE ---
+def save_data(df, filename):
+    """✅ Salva dados APENAS no SharePoint (sem cache local)"""
+    try:
+        df_out = df.copy()
+
+        if filename == 'users':
+            if 'rv_acumulada' in df_out.columns:
+                df_out['rv_acumulada'] = pd.to_numeric(df_out['rv_acumulada'], errors='coerce').fillna(0.0)
+                df_out['rv_acumulada'] = df_out['rv_acumulada'].apply(lambda x: f"{x:.2f}".replace('.', ','))
+            df_out.rename(columns={'nome': 'Colaborador', 'id_login': 'Id_colaborador', 'tipo': 'Cargo', 'turno': 'Turno'}, inplace=True)
+
+        if filename == 'tasks' and 'valor' in df_out.columns:
+            df_out['valor'] = pd.to_numeric(df_out['valor'], errors='coerce').fillna(0.0)
+            df_out['valor'] = df_out['valor'].apply(lambda x: f"{x:.2f}".replace('.', ','))
+
+        sucesso = write_csv_to_sharepoint(df_out, filename)
+        
+        if not sucesso:
+            st.error(f"❌ Erro ao guardar {filename} no SharePoint.")
+        
+        return sucesso
+
+    except Exception as e:
+        st.error(f"❌ Erro crítico ao salvar {filename}: {e}")
+        return False
+
+# --- FUNÇÕES DE GITHUB ---
 def get_github_repo():
     if "GITHUB_TOKEN" in st.secrets and "GITHUB_REPO" in st.secrets:
         g = Github(st.secrets["GITHUB_TOKEN"])
@@ -241,71 +338,6 @@ def generate_media_name(usuario, activity, sku, sufixo=""):
     return f"{nome_safe}_{atv_safe}_{sku_safe}_{data_safe}{sufixo_str}"
 
 # --- GERENCIAMENTO DE DADOS ---
-def init_data():
-    if not os.path.exists(f"{FILES_PATH}/rules.csv"):
-        df_regras = pd.DataFrame(NOVAS_REGRAS)
-        df_regras.to_csv(f"{FILES_PATH}/rules.csv", index=False, sep=';', encoding='utf-8-sig')
-    if not os.path.exists(f"{FILES_PATH}/users.csv"):
-        pd.DataFrame(columns=['Colaborador', 'Id_colaborador', 'Cargo', 'rv_acumulada', 'Turno']).to_csv(f"{FILES_PATH}/users.csv", sep=';', index=False, encoding='utf-8-sig')
-    if not os.path.exists(f"{FILES_PATH}/tasks.csv"):
-        cols = ['id_task', 'colaborador_id', 'conferente_id', 'atividade', 'area', 'descricao', 
-                'sku_produto', 'prioridade', 'status', 'valor', 'data_criacao', 'inicio_execucao', 
-                'fim_execucao', 'tempo_total_min', 'obs_rejeicao', 'qtd_lata', 'qtd_pet', 
-                'qtd_oneway', 'qtd_longneck', 'qtd_produzida', 'evidencia_img', 'prazo']
-        pd.DataFrame(columns=cols).to_csv(f"{FILES_PATH}/tasks.csv", sep=';', index=False, encoding='utf-8-sig')
-    if not os.path.exists(f"{FILES_PATH}/sku.csv"):
-        pd.DataFrame(columns=['codigo', 'descricao']).to_csv(f"{FILES_PATH}/sku.csv", sep=';', index=False, encoding='utf-8-sig')
-
-def get_data(filename):
-    sync_from_drive(filename) 
-    path = f"{FILES_PATH}/{filename}.csv"
-    if not os.path.exists(path):
-        init_data()
-        if not os.path.exists(path): return pd.DataFrame()
-    try:
-        try: df = pd.read_csv(path, sep=';', encoding='utf-8-sig', dtype=str)
-        except UnicodeDecodeError: df = pd.read_csv(path, sep=';', encoding='latin1', dtype=str)
-        
-        if filename == 'tasks':
-            required = ['id_task', 'colaborador_id', 'status', 'valor', 'atividade']
-            if df.empty or not all(c in df.columns for c in required):
-                 cols = ['id_task', 'colaborador_id', 'conferente_id', 'atividade', 'area', 'descricao', 
-                         'sku_produto', 'prioridade', 'status', 'valor', 'data_criacao', 'inicio_execucao', 
-                         'fim_execucao', 'tempo_total_min', 'obs_rejeicao', 'qtd_lata', 'qtd_pet', 
-                         'qtd_oneway', 'qtd_longneck', 'qtd_produzida', 'evidencia_img', 'prazo']
-                 return pd.DataFrame(columns=cols)
-            if 'prazo' not in df.columns: df['prazo'] = '2099-12-31 23:59:59'
-            df['valor'] = pd.to_numeric(df['valor'].astype(str).str.replace(',', '.'), errors='coerce').fillna(0.0)
-            df['tempo_total_min'] = pd.to_numeric(df['tempo_total_min'].astype(str).str.replace(',', '.'), errors='coerce').fillna(0.0)
-        elif filename == 'users':
-            df.rename(columns={'Colaborador': 'nome', 'Id_colaborador': 'id_login', 'Cargo': 'tipo', 'Turno': 'turno'}, inplace=True)
-            if 'rv_acumulada' not in df.columns: df['rv_acumulada'] = 0.0
-            if 'turno' not in df.columns: df['turno'] = '-' 
-            df['rv_acumulada'] = pd.to_numeric(df['rv_acumulada'].astype(str).str.replace(',', '.'), errors='coerce').fillna(0.0)
-        elif filename == 'rules':
-            df['valor'] = pd.to_numeric(df['valor'].astype(str).str.replace(',', '.'), errors='coerce').fillna(0.0)
-            if len(df) < len(NOVAS_REGRAS):
-                df_novo = pd.DataFrame(NOVAS_REGRAS)
-                save_data(df_novo, 'rules')
-                return df_novo
-        return df
-    except Exception: return pd.DataFrame()
-
-def save_data(df, filename):
-    try: 
-        df_out = df.copy()
-        if filename == 'users':
-            if 'rv_acumulada' in df_out.columns:
-                df_out['rv_acumulada'] = pd.to_numeric(df_out['rv_acumulada'], errors='coerce').fillna(0.0)
-                df_out['rv_acumulada'] = df_out['rv_acumulada'].apply(lambda x: f"{x:.2f}".replace('.', ','))
-            df_out.rename(columns={'nome': 'Colaborador', 'id_login': 'Id_colaborador', 'tipo': 'Cargo', 'turno': 'Turno'}, inplace=True)
-        if filename == 'tasks' and 'valor' in df_out.columns:
-            df_out['valor'] = pd.to_numeric(df_out['valor'], errors='coerce').fillna(0.0)
-            df_out['valor'] = df_out['valor'].apply(lambda x: f"{x:.2f}".replace('.', ','))
-        df_out.to_csv(f"{FILES_PATH}/{filename}.csv", index=False, sep=';', encoding='utf-8-sig')
-        save_to_drive(filename)
-    except Exception: st.error(f"Erro ao guardar {filename}.")
-
 def add_task_safe(task_dict):
     df = get_data("tasks")
     new_row = pd.DataFrame([task_dict])
@@ -410,25 +442,21 @@ def login_screen():
         st.info("Insira o seu ID ou Matrícula")
         lid = st.text_input("ID").strip()
         
-        # Alinhamento dos botões ENTRAR e Sinc lado a lado conforme imagem
         c_btn1, c_btn2 = st.columns([3, 1])
         entrar_clicado = c_btn1.button("ENTRAR", use_container_width=True)
-        sinc_clicado = c_btn2.button("🔄 Sinc", help="Força a leitura atualizada do Google Drive", use_container_width=True)
+        sinc_clicado = c_btn2.button("🔄 Sinc", help="Força a leitura atualizada do SharePoint", use_container_width=True)
         
         if sinc_clicado:
-            sucesso_sinc = sync_from_drive("users", force=True)
-            if sucesso_sinc:
-                st.success("✅ Sincronização executada com sucesso!")
-                time.sleep(0.5)
-                st.rerun()
-            else:
-                st.error("Falha ao puxar do Drive. Verifique se partilhou a pasta com o e-mail do Service Account.")
+            st.cache_resource.clear()
+            st.success("✅ Cache limpo! Sincronizando com SharePoint...")
+            time.sleep(0.5)
+            st.rerun()
 
         users = get_data("users")
         
         if entrar_clicado:
             if users.empty:
-                st.error("❌ Ficheiro de utilizadores vazio ou não encontrado no local/Drive.")
+                st.error("❌ Base de utilizadores vazia ou não encontrada no SharePoint.")
             else:
                 users['id_temp'] = users['id_login'].apply(clean_id)
                 lid_str = clean_id(lid)
@@ -447,25 +475,29 @@ def login_screen():
                             st.write("IDs limpos:", users['id_temp'].tolist())
                             st.write("Seu ID digitado (limpo):", lid_str)
 
-        # Mecanismo Administrativo de Recuperação / Forçar Upload Manual conforme imagem
         st.markdown("<br><br>", unsafe_allow_html=True)
-        with st.expander("🔧 Administração: Forçar Upload da Base de Utilizadores"):
+        with st.expander("🔧 Administração: Upload da Base de Utilizadores"):
             st.warning("O sistema não encontra os utilizadores? Arraste o seu ficheiro CSV aqui para forçar a gravação.")
             st.write("Faça upload do seu ficheiro (users.csv)")
             uploaded_file = st.file_uploader("Upload", type=["csv"], label_visibility="collapsed")
             if uploaded_file is not None:
                 try:
-                    try: df_manual = pd.read_csv(uploaded_file, sep=';', dtype=str, encoding='utf-8-sig')
-                    except Exception: df_manual = pd.read_csv(uploaded_file, sep=';', dtype=str, encoding='latin1')
+                    try: 
+                        df_manual = pd.read_csv(uploaded_file, sep=';', dtype=str, encoding='utf-8-sig')
+                    except Exception: 
+                        df_manual = pd.read_csv(uploaded_file, sep=';', dtype=str, encoding='latin1')
                     
                     rename_dict = {'Colaborador': 'nome', 'Id_colaborador': 'id_login', 'Cargo': 'tipo', 'Turno': 'turno'}
                     df_manual.rename(columns=rename_dict, inplace=True)
                     
                     if 'id_login' in df_manual.columns:
-                        save_data(df_manual, "users")
-                        st.success("✅ Base de utilizadores carregada e salva localmente com sucesso!")
-                        time.sleep(1)
-                        st.rerun()
+                        if save_data(df_manual, "users"):
+                            st.success("✅ Base de utilizadores carregada e salva no SharePoint com sucesso!")
+                            st.cache_resource.clear()
+                            time.sleep(1)
+                            st.rerun()
+                        else:
+                            st.error("❌ Erro ao salvar no SharePoint.")
                     else:
                         st.error("❌ Erro: O arquivo precisa conter a coluna 'Id_colaborador'.")
                 except Exception as e:
@@ -1042,15 +1074,22 @@ def interface_colaborador_auto(uid):
 
 # --- ROTEAMENTO E PERSISTÊNCIA ---
 if 'user_id' not in st.session_state:
-    if not restore_session(): login_screen()
-    else: st.rerun()
+    if not restore_session(): 
+        login_screen()
+    else: 
+        st.rerun()
 else:
-    if 'uid' not in st.query_params: st.query_params['uid'] = st.session_state['user_id']
+    if 'uid' not in st.query_params: 
+        st.query_params['uid'] = st.session_state['user_id']
+    
     r = st.session_state.get('role', 'Colaborador')
-    if r == 'Supervisor': interface_supervisor()
-    elif r == 'Operador': interface_operador()
-    elif r == 'Conferente': interface_conferente()
-    elif r == 'Colaborador': interface_operador()
-    else: do_logout()
-
-
+    if r == 'Supervisor': 
+        interface_supervisor()
+    elif r == 'Operador': 
+        interface_operador()
+    elif r == 'Conferente': 
+        interface_conferente()
+    elif r == 'Colaborador': 
+        interface_operador()
+    else: 
+        do_logout()
