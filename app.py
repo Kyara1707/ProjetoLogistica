@@ -1052,3 +1052,5 @@ else:
     elif r == 'Conferente': interface_conferente()
     elif r == 'Colaborador': interface_operador()
     else: do_logout()
+
+
