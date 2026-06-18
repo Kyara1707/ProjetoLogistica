@@ -10,9 +10,12 @@ from github import Github
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="ProTrack Logística", layout="wide", page_icon="🚛")
 
-# --- IMPORTAÇÕES PARA O GOOGLE SHEETS ---
+# --- IMPORTAÇÕES PARA O GOOGLE DRIVE ---
 from google.oauth2 import service_account
-import gspread
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
+import io
+import mimetypes
 
 # --- ESTILOS CSS ---
 st.markdown("""
@@ -62,6 +65,7 @@ ATIVIDADES_SEM_SKU = [
 
 SUPERVISORES_PERMITIDOS = ['99849441', '99813623', '99797465']
 
+# Trava de IDs antigas
 CONFERENTES_BLOQUEADOS = ['05480968', '5480968', '05471598', '5471598'] 
 
 LIMITE_RV_OPERADOR = 380.00  
@@ -114,7 +118,9 @@ NOVAS_REGRAS = [
     {"atividade": "RETIRAR PRODUTOS SELO VERMELHO", "valor": 0.00}
 ]
 
+FILES_PATH = "data"
 IMGS_PATH = "images"
+os.makedirs(FILES_PATH, exist_ok=True)
 os.makedirs(IMGS_PATH, exist_ok=True)
 
 def format_currency(value):
@@ -133,92 +139,84 @@ def get_turno_atual():
     else:
         return 'C'
 
-# --- INTEGRAÇÃO DIRETA COM O GOOGLE SHEETS ---
-def get_gspread_client():
+# --- INTEGRAÇÃO DIRETA COM O GOOGLE DRIVE ---
+def get_drive_service():
     if "gcp_service_account" in st.secrets:
         creds_dict = dict(st.secrets["gcp_service_account"])
-        SCOPES = [
-            'https://www.googleapis.com/auth/spreadsheets',
-            'https://www.googleapis.com/auth/drive'
-        ]
+        SCOPES = ['https://www.googleapis.com/auth/drive']
         creds = service_account.Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
-        return gspread.authorize(creds)
+        return build('drive', 'v3', credentials=creds)
     return None
 
-def get_data(filename):
-    client = get_gspread_client()
-    if not client: 
-        return pd.DataFrame()
-        
+def sync_from_drive(filename):
+    path = f"{FILES_PATH}/{filename}.csv"
+    if os.path.exists(path):
+        if (time.time() - os.path.getmtime(path)) < 15:
+            return 
     try:
-        sheet_id = st.secrets.get("SPREADSHEET_ID", "")
-        doc = client.open_by_key(sheet_id)
-        worksheet = doc.worksheet(filename)
-        data = worksheet.get_all_values()
+        service = get_drive_service()
+        if not service: 
+            st.error("Erro: Serviço do Google Drive não inicializado. Verifique os Secrets.")
+            return
         
-        if not data:
-            df = pd.DataFrame()
-        else:
-            headers = data.pop(0)
-            df = pd.DataFrame(data, columns=headers)
+        folder_id = st.secrets.get("DRIVE_FOLDER_DATA_ID", "")
+        if not folder_id: 
+            st.error("Erro: DRIVE_FOLDER_DATA_ID não configurado nos Secrets.")
+            return
+        
+        query = f"(name='{filename}.csv' or name='{filename}') and '{folder_id}' in parents and trashed=false"
+        results = service.files().list(q=query, fields="files(id, name, mimeType)").execute()
+        items = results.get('files', [])
+
+        if items:
+            file_id = items[0]['id']
+            mime_type = items[0].get('mimeType', '')
             
-        if filename == 'tasks':
-            required = ['id_task', 'colaborador_id', 'status', 'valor', 'atividade']
-            if df.empty or not all(c in df.columns for c in required):
-                 cols = ['id_task', 'colaborador_id', 'conferente_id', 'atividade', 'area', 'descricao', 
-                         'sku_produto', 'prioridade', 'status', 'valor', 'data_criacao', 'inicio_execucao', 
-                         'fim_execucao', 'tempo_total_min', 'obs_rejeicao', 'qtd_lata', 'qtd_pet', 
-                         'qtd_oneway', 'qtd_longneck', 'qtd_produzida', 'evidencia_img', 'prazo']
-                 return pd.DataFrame(columns=cols)
-            
-            if 'prazo' not in df.columns: df['prazo'] = '2099-12-31 23:59:59'
-            df['valor'] = pd.to_numeric(df['valor'].astype(str).str.replace(',', '.'), errors='coerce').fillna(0.0)
-            df['tempo_total_min'] = pd.to_numeric(df['tempo_total_min'].astype(str).str.replace(',', '.'), errors='coerce').fillna(0.0)
-            
-        elif filename == 'users':
-            df.rename(columns={'Colaborador': 'nome', 'Id_colaborador': 'id_login', 'Cargo': 'tipo', 'Turno': 'turno'}, inplace=True)
-            if 'rv_acumulada' not in df.columns: df['rv_acumulada'] = 0.0
-            if 'turno' not in df.columns: df['turno'] = '-' 
-            df['rv_acumulada'] = pd.to_numeric(df['rv_acumulada'].astype(str).str.replace(',', '.'), errors='coerce').fillna(0.0)
-            
-        elif filename == 'rules':
-            df['valor'] = pd.to_numeric(df['valor'].astype(str).str.replace(',', '.'), errors='coerce').fillna(0.0)
-            if len(df) < len(NOVAS_REGRAS):
-                df_novo = pd.DataFrame(NOVAS_REGRAS)
-                save_data(df_novo, 'rules')
-                return df_novo
+            if "google-apps.spreadsheet" in mime_type:
+                request = service.files().export_media(fileId=file_id, mimeType='text/csv')
+            else:
+                request = service.files().get_media(fileId=file_id)
                 
-        return df
+            with open(path, 'wb') as f:
+                downloader = MediaIoBaseDownload(f, request)
+                done = False
+                while not done:
+                    status, done = downloader.next_chunk()
+        else:
+            st.warning(f"Aviso: Ficheiro '{filename}' não foi encontrado no Google Drive. Será criado localmente.")
     except Exception as e:
-        return pd.DataFrame()
+        st.error(f"Erro crítico ao sincronizar '{filename}' do Google Drive: {e}")
 
-def save_data(df, filename):
-    client = get_gspread_client()
-    if not client: 
-        return
+def save_to_drive(filename):
+    try:
+        service = get_drive_service()
+        if not service: return
         
-    try: 
-        sheet_id = st.secrets.get("SPREADSHEET_ID", "")
-        doc = client.open_by_key(sheet_id)
-        worksheet = doc.worksheet(filename)
+        folder_id = st.secrets.get("DRIVE_FOLDER_DATA_ID", "")
+        if not folder_id: return
         
-        df_out = df.copy()
-        if filename == 'users':
-            if 'rv_acumulada' in df_out.columns:
-                df_out['rv_acumulada'] = pd.to_numeric(df_out['rv_acumulada'], errors='coerce').fillna(0.0)
-                df_out['rv_acumulada'] = df_out['rv_acumulada'].apply(lambda x: f"{x:.2f}".replace('.', ','))
-            df_out.rename(columns={'nome': 'Colaborador', 'id_login': 'Id_colaborador', 'tipo': 'Cargo', 'turno': 'Turno'}, inplace=True)
+        file_path = f"{FILES_PATH}/{filename}.csv"
+        full_name = f"{filename}.csv"
 
-        if filename == 'tasks' and 'valor' in df_out.columns:
-            df_out['valor'] = pd.to_numeric(df_out['valor'], errors='coerce').fillna(0.0)
-            df_out['valor'] = df_out['valor'].apply(lambda x: f"{x:.2f}".replace('.', ','))
+        query = f"name='{full_name}' and '{folder_id}' in parents and trashed=false"
+        results = service.files().list(q=query, fields="files(id, name)").execute()
+        items = results.get('files', [])
+
+        media = MediaFileUpload(file_path, mimetype='text/csv', resumable=True)
+
+        if not items:
+            file_metadata = {'name': full_name, 'parents': [folder_id]}
+            service.files().create(body=file_metadata, media_body=media, fields='id').execute()
+        else:
+            file_id = items[0]['id']
+            service.files().update(fileId=file_id, media_body=media).execute()
             
-        df_out = df_out.fillna('') 
-        
-        worksheet.clear()
-        worksheet.update([df_out.columns.values.tolist()] + df_out.values.tolist())
-    except Exception as e: 
-        st.error(f"Erro ao guardar {filename} no Planilhas Google.")
+            if len(items) > 1:
+                for dup in items[1:]:
+                    try: service.files().delete(fileId=dup['id']).execute()
+                    except: pass
+    except Exception as e:
+        st.error(f"Erro ao guardar/atualizar o ficheiro '{filename}' no Google Drive: {e}")
 
 # --- FUNÇÕES DE IMAGEM PARA O GITHUB ---
 def get_github_repo():
@@ -262,7 +260,88 @@ def generate_media_name(usuario, atividade, sku, sufixo=""):
     sufixo_str = f"_{sufixo}" if sufixo else ""
     return f"{nome_safe}_{atv_safe}_{sku_safe}_{data_safe}{sufixo_str}"
 
-# --- GERENCIAMENTO DE DADOS E SEGURANÇA ---
+# --- GERENCIAMENTO DE DADOS ---
+def init_data():
+    if not os.path.exists(f"{FILES_PATH}/rules.csv"):
+        df_regras = pd.DataFrame(NOVAS_REGRAS)
+        df_regras.to_csv(f"{FILES_PATH}/rules.csv", index=False, sep=';', encoding='utf-8-sig')
+    
+    if not os.path.exists(f"{FILES_PATH}/users.csv"):
+        pd.DataFrame(columns=['Colaborador', 'Id_colaborador', 'Cargo', 'rv_acumulada', 'Turno']).to_csv(f"{FILES_PATH}/users.csv", sep=';', index=False, encoding='utf-8-sig')
+    
+    if not os.path.exists(f"{FILES_PATH}/tasks.csv"):
+        cols = ['id_task', 'colaborador_id', 'conferente_id', 'atividade', 'area', 'descricao', 
+                'sku_produto', 'prioridade', 'status', 'valor', 'data_criacao', 'inicio_execucao', 
+                'fim_execucao', 'tempo_total_min', 'obs_rejeicao', 'qtd_lata', 'qtd_pet', 
+                'qtd_oneway', 'qtd_longneck', 'qtd_produzida', 'evidencia_img', 'prazo']
+        pd.DataFrame(columns=cols).to_csv(f"{FILES_PATH}/tasks.csv", sep=';', index=False, encoding='utf-8-sig')
+
+    if not os.path.exists(f"{FILES_PATH}/sku.csv"):
+        pd.DataFrame(columns=['codigo', 'descricao']).to_csv(f"{FILES_PATH}/sku.csv", sep=';', index=False, encoding='utf-8-sig')
+
+def get_data(filename):
+    sync_from_drive(filename) 
+    path = f"{FILES_PATH}/{filename}.csv"
+    
+    if not os.path.exists(path):
+        init_data()
+        if not os.path.exists(path): return pd.DataFrame()
+
+    try:
+        try:
+            df = pd.read_csv(path, sep=';', encoding='utf-8-sig', dtype=str)
+        except UnicodeDecodeError:
+            df = pd.read_csv(path, sep=';', encoding='latin1', dtype=str)
+        
+        if filename == 'tasks':
+            required = ['id_task', 'colaborador_id', 'status', 'valor', 'atividade']
+            if df.empty or not all(c in df.columns for c in required):
+                 cols = ['id_task', 'colaborador_id', 'conferente_id', 'atividade', 'area', 'descricao', 
+                         'sku_produto', 'prioridade', 'status', 'valor', 'data_criacao', 'inicio_execucao', 
+                         'fim_execucao', 'tempo_total_min', 'obs_rejeicao', 'qtd_lata', 'qtd_pet', 
+                         'qtd_oneway', 'qtd_longneck', 'qtd_produzida', 'evidencia_img', 'prazo']
+                 return pd.DataFrame(columns=cols)
+            
+            if 'prazo' not in df.columns: df['prazo'] = '2099-12-31 23:59:59'
+            df['valor'] = pd.to_numeric(df['valor'].astype(str).str.replace(',', '.'), errors='coerce').fillna(0.0)
+            df['tempo_total_min'] = pd.to_numeric(df['tempo_total_min'].astype(str).str.replace(',', '.'), errors='coerce').fillna(0.0)
+            
+        elif filename == 'users':
+            df.rename(columns={'Colaborador': 'nome', 'Id_colaborador': 'id_login', 'Cargo': 'tipo', 'Turno': 'turno'}, inplace=True)
+            if 'rv_acumulada' not in df.columns: df['rv_acumulada'] = 0.0
+            if 'turno' not in df.columns: df['turno'] = '-' 
+            df['rv_acumulada'] = pd.to_numeric(df['rv_acumulada'].astype(str).str.replace(',', '.'), errors='coerce').fillna(0.0)
+            
+        elif filename == 'rules':
+            df['valor'] = pd.to_numeric(df['valor'].astype(str).str.replace(',', '.'), errors='coerce').fillna(0.0)
+            if len(df) < len(NOVAS_REGRAS):
+                df_novo = pd.DataFrame(NOVAS_REGRAS)
+                save_data(df_novo, 'rules')
+                return df_novo
+            
+        return df
+    except Exception as e:
+        st.error(f"Erro ao ler os dados locais de {filename}: {e}")
+        return pd.DataFrame()
+
+def save_data(df, filename):
+    try: 
+        df_out = df.copy()
+        if filename == 'users':
+            if 'rv_acumulada' in df_out.columns:
+                df_out['rv_acumulada'] = pd.to_numeric(df_out['rv_acumulada'], errors='coerce').fillna(0.0)
+                df_out['rv_acumulada'] = df_out['rv_acumulada'].apply(lambda x: f"{x:.2f}".replace('.', ','))
+            df_out.rename(columns={'nome': 'Colaborador', 'id_login': 'Id_colaborador', 'tipo': 'Cargo', 'turno': 'Turno'}, inplace=True)
+
+        if filename == 'tasks' and 'valor' in df_out.columns:
+            df_out['valor'] = pd.to_numeric(df_out['valor'], errors='coerce').fillna(0.0)
+            df_out['valor'] = df_out['valor'].apply(lambda x: f"{x:.2f}".replace('.', ','))
+        
+        df_out.to_csv(f"{FILES_PATH}/{filename}.csv", index=False, sep=';', encoding='utf-8-sig')
+        save_to_drive(filename)
+    except Exception as e: 
+        st.error(f"Erro ao guardar dados locais em {filename}: {e}")
+
 def add_task_safe(task_dict):
     df = get_data("tasks")
     new_row = pd.DataFrame([task_dict])
@@ -397,7 +476,6 @@ def get_conferentes_disponiveis(users, criador_id=None):
         criador_id_str = str(criador_id).strip().replace('.0', '')
         confs['id_clean'] = confs['id_login'].astype(str).str.strip().replace('.0', '')
         confs_diferentes = confs[confs['id_clean'] != criador_id_str]
-        
         if not confs_diferentes.empty:
             confs = confs_diferentes
 
@@ -580,7 +658,7 @@ def login_screen():
         if st.button("ENTRAR"):
             users = get_data("users")
             if users.empty:
-                st.error("Base de utilizadores não encontrada no Google Sheets.")
+                st.error("Ficheiro de utilizadores vazio ou não encontrado.")
                 return
 
             users['id_temp'] = users['id_login'].astype(str).str.strip().apply(lambda x: str(x)[:-2] if str(x).endswith('.0') else str(x))
