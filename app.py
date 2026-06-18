@@ -10,9 +10,9 @@ from github import Github
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="ProTrack Logística", layout="wide", page_icon="🚛")
 
-# --- IMPORTAÇÕES PARA O GOOGLE SHEETS & DRIVE ---
+# --- IMPORTAÇÕES PARA O GOOGLE SHEETS ---
 from google.oauth2 import service_account
-from googleapiclient.discovery import build
+import gspread
 
 # --- ESTILOS CSS ---
 st.markdown("""
@@ -61,11 +61,11 @@ ATIVIDADES_SEM_SKU = [
 ]
 
 SUPERVISORES_PERMITIDOS = ['99849441', '99813623', '99797465']
+
 CONFERENTES_BLOQUEADOS = ['05480968', '5480968', '05471598', '5471598'] 
 
 LIMITE_RV_OPERADOR = 380.00  
 
-# Matriz de regras padrão
 NOVAS_REGRAS = [
     {"atividade": "SELO VERMELHO (TOPO/MOLHADO)", "valor": 1.25},
     {"atividade": "SELO VERMELHO (BASE/VAZAMENTO)", "valor": 1.50},
@@ -114,16 +114,8 @@ NOVAS_REGRAS = [
     {"atividade": "RETIRAR PRODUTOS SELO VERMELHO", "valor": 0.00}
 ]
 
-FILES_PATH = "data"
 IMGS_PATH = "images"
-os.makedirs(FILES_PATH, exist_ok=True)
 os.makedirs(IMGS_PATH, exist_ok=True)
-
-# --- FUNÇÃO DE LIMPEZA DE IDS ---
-def clean_id(x):
-    if pd.isna(x): return ""
-    s = str(x).strip().replace('.0', '')
-    return s.lstrip('0') if s != '0' else '0'
 
 def format_currency(value):
     try: return f"R$ {float(value):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
@@ -134,161 +126,101 @@ def get_time_br():
 
 def get_turno_atual():
     hora = get_time_br().hour
-    if 6 <= hora < 14: return 'A'
-    elif 14 <= hora < 22: return 'B'
-    else: return 'C'
+    if 6 <= hora < 14:
+        return 'A'
+    elif 14 <= hora < 22:
+        return 'B'
+    else:
+        return 'C'
 
-# --- CONEXÃO DIRETA COM O GOOGLE SHEETS API ---
-def get_sheets_service():
+# --- INTEGRAÇÃO DIRETA COM O GOOGLE SHEETS ---
+def get_gspread_client():
     if "gcp_service_account" in st.secrets:
         creds_dict = dict(st.secrets["gcp_service_account"])
-        SCOPES = ['https://www.googleapis.com/auth/spreadsheets']
+        SCOPES = [
+            'https://www.googleapis.com/auth/spreadsheets',
+            'https://www.googleapis.com/auth/drive'
+        ]
         creds = service_account.Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
-        return build('sheets', 'v4', credentials=creds)
-    else:
-        st.session_state['last_drive_error'] = "Credenciais 'gcp_service_account' ausentes nos Secrets."
+        return gspread.authorize(creds)
     return None
 
-def read_sheet_to_df(sheet_name):
-    try:
-        service = get_sheets_service()
-        if not service: return pd.DataFrame()
-        spreadsheet_id = st.secrets.get("SPREADSHEET_ID", "")
-        if not spreadsheet_id:
-            st.session_state['last_drive_error'] = "ID da Planilha (SPREADSHEET_ID) não configurado nos Secrets."
-            return pd.DataFrame()
-        
-        result = service.spreadsheets().values().get(
-            spreadsheetId=spreadsheet_id, range=f"'{sheet_name}'!A:Z"
-        ).execute()
-        values = result.get('values', [])
-        if not values: return pd.DataFrame()
-        
-        headers = [c.strip() for c in values[0]]
-        rows = values[1:]
-        padded_rows = [row + [''] * (len(headers) - len(row)) for row in rows]
-        return pd.DataFrame(padded_rows, columns=headers)
-    except Exception as e:
-        st.session_state['last_drive_error'] = f"Erro ao acessar aba Google Sheets '{sheet_name}': {str(e)}"
-        return pd.DataFrame()
-
-def write_df_to_sheet(df, sheet_name):
-    try:
-        service = get_sheets_service()
-        if not service: return False
-        spreadsheet_id = st.secrets.get("SPREADSHEET_ID", "")
-        if not spreadsheet_id: return False
-        
-        df_clean = df.fillna("").astype(str)
-        values = [df_clean.columns.tolist()] + df_clean.values.tolist()
-        
-        # Limpa resíduos antigos da aba para evitar sobreposição de linhas fantasmas
-        service.spreadsheets().values().clear(
-            spreadsheetId=spreadsheet_id, range=f"'{sheet_name}'!A:Z"
-        ).execute()
-        
-        body = {'values': values}
-        service.spreadsheets().values().update(
-            spreadsheetId=spreadsheet_id, range=f"'{sheet_name}'!A1",
-            valueInputOption='RAW', body=body
-        ).execute()
-        return True
-    except Exception as e:
-        st.session_state['last_drive_error'] = f"Erro ao gravar na aba Google Sheets '{sheet_name}': {str(e)}"
-        return False
-
-# --- COMPATIBILIDADE ROBÚSTA E RETALHA LOCAL DE CONTINGÊNCIA ---
-def read_csv_robust(path):
-    for encoding in ['utf-8-sig', 'latin1', 'utf-8']:
-        for separator in [';', ',']:
-            try:
-                df = pd.read_csv(path, sep=separator, encoding=encoding, dtype=str)
-                if not df.empty and len(df.columns) >= 1:
-                    df.columns = [c.strip() for c in df.columns]
-                    return df
-            except Exception: continue
-    try: return pd.read_csv(path, sep=';', encoding='utf-8-sig', dtype=str)
-    except Exception: return pd.read_csv(path, sep=',', encoding='latin1', dtype=str)
-
-def init_data():
-    if not os.path.exists(f"{FILES_PATH}/rules.csv"):
-        pd.DataFrame(NOVAS_REGRAS).to_csv(f"{FILES_PATH}/rules.csv", index=False, sep=';', encoding='utf-8-sig')
-    if not os.path.exists(f"{FILES_PATH}/users.csv"):
-        pd.DataFrame(columns=['Colaborador', 'Id_colaborador', 'Cargo', 'rv_acumulada', 'Turno']).to_csv(f"{FILES_PATH}/users.csv", sep=';', index=False, encoding='utf-8-sig')
-    if not os.path.exists(f"{FILES_PATH}/tasks.csv"):
-        cols = ['id_task', 'colaborador_id', 'conferente_id', 'atividade', 'area', 'descricao', 
-                'sku_produto', 'prioridade', 'status', 'valor', 'data_criacao', 'inicio_execucao', 
-                'fim_execucao', 'tempo_total_min', 'obs_rejeicao', 'qtd_lata', 'qtd_pet', 
-                'qtd_oneway', 'qtd_longneck', 'qtd_produzida', 'evidencia_img', 'prazo']
-        pd.DataFrame(columns=cols).to_csv(f"{FILES_PATH}/tasks.csv", sep=';', index=False, encoding='utf-8-sig')
-    if not os.path.exists(f"{FILES_PATH}/sku.csv"):
-        pd.DataFrame(columns=['codigo', 'descricao']).to_csv(f"{FILES_PATH}/sku.csv", sep=';', index=False, encoding='utf-8-sig')
-
 def get_data(filename):
-    # Tenta puxar diretamente em tempo real do Google Sheets
-    df = read_sheet_to_df(filename)
-    path = f"{FILES_PATH}/{filename}.csv"
-    
-    # Fallback local se o Google Sheets falhar ou estiver vazio
-    if df.empty:
-        if os.path.exists(path): df = read_csv_robust(path)
-        else:
-            init_data()
-            if os.path.exists(path): df = read_csv_robust(path)
-            else: return pd.DataFrame()
-    else:
-        # Atualiza o cache local de contingência em background
-        df.to_csv(path, index=False, sep=';', encoding='utf-8-sig')
+    client = get_gspread_client()
+    if not client: 
+        return pd.DataFrame()
         
     try:
+        sheet_id = st.secrets.get("SPREADSHEET_ID", "")
+        doc = client.open_by_key(sheet_id)
+        worksheet = doc.worksheet(filename)
+        data = worksheet.get_all_values()
+        
+        if not data:
+            df = pd.DataFrame()
+        else:
+            headers = data.pop(0)
+            df = pd.DataFrame(data, columns=headers)
+            
         if filename == 'tasks':
+            required = ['id_task', 'colaborador_id', 'status', 'valor', 'atividade']
+            if df.empty or not all(c in df.columns for c in required):
+                 cols = ['id_task', 'colaborador_id', 'conferente_id', 'atividade', 'area', 'descricao', 
+                         'sku_produto', 'prioridade', 'status', 'valor', 'data_criacao', 'inicio_execucao', 
+                         'fim_execucao', 'tempo_total_min', 'obs_rejeicao', 'qtd_lata', 'qtd_pet', 
+                         'qtd_oneway', 'qtd_longneck', 'qtd_produzida', 'evidencia_img', 'prazo']
+                 return pd.DataFrame(columns=cols)
+            
             if 'prazo' not in df.columns: df['prazo'] = '2099-12-31 23:59:59'
             df['valor'] = pd.to_numeric(df['valor'].astype(str).str.replace(',', '.'), errors='coerce').fillna(0.0)
             df['tempo_total_min'] = pd.to_numeric(df['tempo_total_min'].astype(str).str.replace(',', '.'), errors='coerce').fillna(0.0)
-        
+            
         elif filename == 'users':
-            rename_dict = {}
-            for c in df.columns:
-                cl = c.lower()
-                if cl in ['colaborador', 'nome']: rename_dict[c] = 'nome'
-                elif cl in ['id_colaborador', 'id_login']: rename_dict[c] = 'id_login'
-                elif cl in ['cargo', 'tipo']: rename_dict[c] = 'tipo'
-                elif cl in ['turno']: rename_dict[c] = 'turno'
-                elif cl in ['rv_acumulada']: rename_dict[c] = 'rv_acumulada'
-            df.rename(columns=rename_dict, inplace=True)
-            if 'id_login' not in df.columns: return pd.DataFrame()
+            df.rename(columns={'Colaborador': 'nome', 'Id_colaborador': 'id_login', 'Cargo': 'tipo', 'Turno': 'turno'}, inplace=True)
             if 'rv_acumulada' not in df.columns: df['rv_acumulada'] = 0.0
             if 'turno' not in df.columns: df['turno'] = '-' 
             df['rv_acumulada'] = pd.to_numeric(df['rv_acumulada'].astype(str).str.replace(',', '.'), errors='coerce').fillna(0.0)
-        
+            
         elif filename == 'rules':
             df['valor'] = pd.to_numeric(df['valor'].astype(str).str.replace(',', '.'), errors='coerce').fillna(0.0)
             if len(df) < len(NOVAS_REGRAS):
                 df_novo = pd.DataFrame(NOVAS_REGRAS)
                 save_data(df_novo, 'rules')
                 return df_novo
+                
         return df
-    except Exception: return pd.DataFrame()
+    except Exception as e:
+        return pd.DataFrame()
 
 def save_data(df, filename):
+    client = get_gspread_client()
+    if not client: 
+        return
+        
     try: 
+        sheet_id = st.secrets.get("SPREADSHEET_ID", "")
+        doc = client.open_by_key(sheet_id)
+        worksheet = doc.worksheet(filename)
+        
         df_out = df.copy()
         if filename == 'users':
             if 'rv_acumulada' in df_out.columns:
                 df_out['rv_acumulada'] = pd.to_numeric(df_out['rv_acumulada'], errors='coerce').fillna(0.0)
                 df_out['rv_acumulada'] = df_out['rv_acumulada'].apply(lambda x: f"{x:.2f}".replace('.', ','))
             df_out.rename(columns={'nome': 'Colaborador', 'id_login': 'Id_colaborador', 'tipo': 'Cargo', 'turno': 'Turno'}, inplace=True)
+
         if filename == 'tasks' and 'valor' in df_out.columns:
             df_out['valor'] = pd.to_numeric(df_out['valor'], errors='coerce').fillna(0.0)
             df_out['valor'] = df_out['valor'].apply(lambda x: f"{x:.2f}".replace('.', ','))
+            
+        df_out = df_out.fillna('') 
         
-        # Salva na contingência local
-        df_out.to_csv(f"{FILES_PATH}/{filename}.csv", index=False, sep=';', encoding='utf-8-sig')
-        # Grava diretamente na Planilha Google Sheets correspondente
-        write_df_to_sheet(df_out, filename)
-    except Exception: st.error(f"Erro ao guardar {filename}.")
+        worksheet.clear()
+        worksheet.update([df_out.columns.values.tolist()] + df_out.values.tolist())
+    except Exception as e: 
+        st.error(f"Erro ao guardar {filename} no Planilhas Google.")
 
-# --- FUNÇÕES DO GITHUB ---
+# --- FUNÇÕES DE IMAGEM PARA O GITHUB ---
 def get_github_repo():
     if "GITHUB_TOKEN" in st.secrets and "GITHUB_REPO" in st.secrets:
         g = Github(st.secrets["GITHUB_TOKEN"])
@@ -305,24 +237,32 @@ def upload_media_to_github(file_path):
                 repo.update_file(contents.path, f"Atualizou Imagem {file_path}", content, contents.sha)
             except Exception:
                 repo.create_file(file_path, f"Upload Imagem {file_path}", content)
-    except Exception as e: st.error(f"Erro ao salvar imagem no GitHub: {e}")
+    except Exception as e:
+        st.error(f"Erro ao salvar imagem no GitHub: {e}")
 
 def get_media_url(local_path):
     if not local_path or pd.isna(local_path): return ""
     if os.path.exists(local_path): return local_path
+    
     repo_name = st.secrets.get("GITHUB_REPO", "")
-    if repo_name: return f"https://raw.githubusercontent.com/{repo_name}/main/{local_path}"
+    if repo_name:
+        return f"https://raw.githubusercontent.com/{repo_name}/main/{local_path}"
     return ""
 
-def generate_media_name(usuario, activity, sku, sufixo=""):
+def generate_media_name(usuario, atividade, sku, sufixo=""):
     nome_safe = str(usuario).strip().replace(" ", "_").upper()
-    atv_safe = str(activity).strip().replace(" ", "_").replace("/", "-").upper()
-    if not sku or sku in ["-", "N/A"]: sku_safe = "SEM_SKU"
-    else: sku_safe = str(sku).split(" - ")[0].strip().replace(" ", "_").upper()
+    atv_safe = str(atividade).strip().replace(" ", "_").replace("/", "-").upper()
+    
+    if not sku or sku in ["-", "N/A"]:
+        sku_safe = "SEM_SKU"
+    else:
+        sku_safe = str(sku).split(" - ")[0].strip().replace(" ", "_").upper()
+        
     data_safe = get_time_br().strftime("%d%m%Y_%H%M%S")
     sufixo_str = f"_{sufixo}" if sufixo else ""
     return f"{nome_safe}_{atv_safe}_{sku_safe}_{data_safe}{sufixo_str}"
 
+# --- GERENCIAMENTO DE DADOS E SEGURANÇA ---
 def add_task_safe(task_dict):
     df = get_data("tasks")
     new_row = pd.DataFrame([task_dict])
@@ -343,10 +283,12 @@ def update_task_safe(task_id, updates):
 
 def update_rv_safe(user_id, amount):
     df = get_data("users")
-    if df.empty: return False
-    uid_clean = clean_id(user_id)
-    df['id_temp'] = df['id_login'].apply(clean_id)
-    idx = df[df['id_temp'] == uid_clean].index
+    uid_str = str(user_id).strip()
+    if uid_str.endswith('.0'): uid_str = uid_str[:-2]
+    
+    df['id_temp'] = df['id_login'].astype(str).str.strip().apply(lambda x: str(x)[:-2] if str(x).endswith('.0') else str(x))
+    idx = df[df['id_temp'] == uid_str].index
+    
     if not idx.empty:
         df['rv_acumulada'] = df['rv_acumulada'].astype(object)
         atual = float(df.at[idx[0], 'rv_acumulada'])
@@ -361,7 +303,7 @@ def verificar_limite_diario_atividade(colaborador_id, atividade_nome):
     if tasks.empty: return False
     hoje_str = get_time_br().strftime("%d/%m")
     feitas = tasks[
-        (tasks['colaborador_id'].apply(clean_id) == clean_id(colaborador_id)) &
+        (tasks['colaborador_id'].astype(str) == str(colaborador_id)) &
         (tasks['atividade'] == atividade_nome) &
         (tasks['data_criacao'].astype(str).str.contains(hoje_str, na=False)) &
         (tasks['status'] != 'Rejeitada')
@@ -371,12 +313,14 @@ def verificar_limite_diario_atividade(colaborador_id, atividade_nome):
 def buscar_sku_interface_v2():
     df_sku = get_data("sku")
     if df_sku.empty:
-        st.warning("Base de SKUs vazia no Google Sheets.")
+        st.warning("Base de SKUs vazia.")
         return "-"
     df_sku['display'] = df_sku.iloc[:, 1].astype(str) + " | Cód: " + df_sku.iloc[:, 0].astype(str)
     opcoes = df_sku['display'].tolist()
+    
     st.write("Pesquise o Material:")
     escolha = st.selectbox("Selecione o Produto (Escreva para buscar)", [""] + opcoes)
+    
     codigo_travado = ""
     nome_produto = "-"
     if escolha:
@@ -384,9 +328,12 @@ def buscar_sku_interface_v2():
             parts = escolha.split(" | Cód: ")
             nome_produto = parts[0]
             codigo_travado = parts[1]
-        except: codigo_travado = "Erro"
+        except:
+            codigo_travado = "Erro"
+            
     st.text_input("Código do SKU (Travado)", value=codigo_travado, disabled=True)
-    if codigo_travado and codigo_travado != "Erro": return f"{codigo_travado} - {nome_produto}"
+    if codigo_travado and codigo_travado != "Erro":
+        return f"{codigo_travado} - {nome_produto}"
     return "-"
 
 # --- GESTÃO DE SESSÃO E LOGIN ---
@@ -400,83 +347,27 @@ def restore_session():
     if 'uid' in qp:
         uid = qp['uid']
         users = get_data("users")
-        if users.empty: return False
+        uid_str = str(uid).strip()
+        if uid_str.endswith('.0'): uid_str = uid_str[:-2]
         
-        uid_clean = clean_id(uid)
-        users['id_temp'] = users['id_login'].apply(clean_id)
-        user = users[users['id_temp'] == uid_clean]
+        users['id_temp'] = users['id_login'].astype(str).str.strip().apply(lambda x: str(x)[:-2] if str(x).endswith('.0') else str(x))
+        user = users[users['id_temp'] == uid_str]
         
         if not user.empty:
             st.session_state['user_id'] = str(user.iloc[0]['id_login']).replace('.0', '')
             st.session_state['user_name'] = user.iloc[0]['nome']
             tipo = str(user.iloc[0]['tipo']).upper()
             
-            meu_id_clean = clean_id(st.session_state['user_id'])
-            sups_clean = [clean_id(x) for x in SUPERVISORES_PERMITIDOS]
-            
-            if meu_id_clean in sups_clean: st.session_state['role'] = 'Supervisor'
-            elif 'OPERADOR' in tipo: st.session_state['role'] = 'Operador'
-            elif 'CONFERENTE' in tipo: st.session_state['role'] = 'Conferente'
-            else: st.session_state['role'] = 'Colaborador'
+            if st.session_state['user_id'] in SUPERVISORES_PERMITIDOS: 
+                st.session_state['role'] = 'Supervisor'
+            elif 'OPERADOR' in tipo: 
+                st.session_state['role'] = 'Operador'
+            elif 'CONFERENTE' in tipo: 
+                st.session_state['role'] = 'Conferente'
+            else: 
+                st.session_state['role'] = 'Colaborador'
             return True
     return False
-
-def login_screen():
-    st.markdown("<h1 style='text-align: center; color: #0054a6;'>ProTrack Logística 🚛</h1>", unsafe_allow_html=True)
-    col1, col2, col3 = st.columns([1,2,1])
-    with col2:
-        st.info("Insira o seu ID ou Matrícula")
-        lid = st.text_input("ID").strip()
-        
-        c_btn1, c_btn2 = st.columns([3, 1])
-        entrar_clicado = c_btn1.button("ENTRAR", use_container_width=True)
-        sinc_clicado = c_btn2.button("🔄 Sinc", help="Força a leitura atualizada do Google Sheets", use_container_width=True)
-        
-        if sinc_clicado:
-            df_teste = read_sheet_to_df("users")
-            if not df_teste.empty:
-                st.success("✅ Sincronização com o Google Sheets executada com sucesso!")
-                time.sleep(0.5)
-                st.rerun()
-            else:
-                st.error("Falha ao puxar do Google Sheets. Verifique se compartilhou a planilha com o e-mail do Service Account.")
-                if 'last_drive_error' in st.session_state:
-                    st.warning(f"🔍 Motivo: {st.session_state['last_drive_error']}")
-
-        users = get_data("users")
-        
-        if entrar_clicado:
-            if users.empty:
-                st.error("❌ Aba de utilizadores vazia ou indisponível no Google Sheets.")
-                if 'last_drive_error' in st.session_state:
-                    st.error(f"⚠️ Erro técnico diagnosticado: {st.session_state['last_drive_error']}")
-            else:
-                users['id_temp'] = users['id_login'].apply(clean_id)
-                lid_str = clean_id(lid)
-                user = users[users['id_temp'] == lid_str]
-                if not user.empty:
-                    id_original = str(user.iloc[0]['id_login']).replace('.0', '')
-                    st.query_params["uid"] = id_original
-                    time.sleep(0.1)
-                    st.rerun()
-                else: st.error("❌ Utilizador não cadastrado.")
-
-        st.markdown("<br><br>", unsafe_allow_html=True)
-        with st.expander("🔧 Administração: Forçar Upload Manual (Contingência CSV)"):
-            st.warning("A Planilha online está fora do ar? Arraste o seu ficheiro CSV aqui para forçar gravação local.")
-            uploaded_file = st.file_uploader("Upload", type=["csv"], label_visibility="collapsed")
-            if uploaded_file is not None:
-                try:
-                    df_manual = read_csv_robust(uploaded_file)
-                    rename_dict = {'Colaborador': 'nome', 'Id_colaborador': 'id_login', 'Cargo': 'tipo', 'Turno': 'turno'}
-                    df_manual.rename(columns=rename_dict, inplace=True)
-                    if 'id_login' in df_manual.columns:
-                        save_data(df_manual, "users")
-                        st.success("✅ Base salva com sucesso!")
-                        time.sleep(1)
-                        st.rerun()
-                    else: st.error("❌ Erro: O arquivo precisa conter a coluna 'Id_colaborador'.")
-                except Exception as e: st.error(f"Erro ao ler arquivo: {e}")
 
 # --- TELA DE REGRAS ---
 def interface_regras():
@@ -489,29 +380,36 @@ def interface_regras():
         st.dataframe(df_show.sort_values('Atividade'), use_container_width=True, hide_index=True)
     else: st.warning("Tabela de regras vazia.")
 
-# REVEZAMENTO INTELIGENTE DE TURNOS
 def get_conferentes_disponiveis(users, criador_id=None):
-    if users.empty or 'tipo' not in users.columns: return pd.DataFrame()
+    if users.empty or 'tipo' not in users.columns:
+        return pd.DataFrame()
+
     confs = users[users['tipo'].astype(str).str.upper().str.contains('CONFERENTE|SUPERVISOR', na=False)].copy()
     confs = confs[~confs['nome'].astype(str).str.upper().str.contains('WEUDES|JULIANO', na=False)]
 
     if 'turno' in confs.columns:
         turno_atual = get_turno_atual()
         confs_turno = confs[confs['turno'].astype(str).str.upper().str.strip() == turno_atual]
-        if not confs_turno.empty: confs = confs_turno
+        if not confs_turno.empty:
+            confs = confs_turno
 
     if criador_id:
-        criador_id_str = clean_id(criador_id)
-        confs['id_clean'] = confs['id_login'].apply(clean_id)
+        criador_id_str = str(criador_id).strip().replace('.0', '')
+        confs['id_clean'] = confs['id_login'].astype(str).str.strip().replace('.0', '')
         confs_diferentes = confs[confs['id_clean'] != criador_id_str]
-        if not confs_diferentes.empty: confs = confs_diferentes
+        
+        if not confs_diferentes.empty:
+            confs = confs_diferentes
+
     return confs
 
 # --- MÓDULOS DE CRIAÇÃO E APROVAÇÃO ---
 def render_menu_criar_tarefa(users, rules):
     st.title("📋 Nova Atividade")
+
     ops = users[~users['tipo'].str.lower().str.contains('conferente|supervisor', na=False, regex=True)]['nome'].tolist()
     atvs = [a for a in rules['atividade'].tolist() if a not in TODOS_KPIS] if not rules.empty else []
+    
     colab = st.selectbox("Colaborador", ops)
     atv = st.selectbox("Atividade", atvs)
     
@@ -520,11 +418,14 @@ def render_menu_criar_tarefa(users, rules):
         st.markdown("---")
         sku_resultado = buscar_sku_interface_v2()
         st.markdown("---")
-    else: sku_resultado = "N/A"
+    else:
+        st.info("SKU não obrigatório para esta atividade.")
+        sku_resultado = "N/A"
 
     with st.form("task_form"):
         area = st.text_input("Local")
         obs = st.text_area("Obs")
+        
         c1, c2 = st.columns(2)
         prio = c1.select_slider("Prioridade", ["Baixa", "Média", "Alta"])
         prazo_horas = c2.number_input("Prazo para Execução (Horas)", min_value=0.5, value=24.0, step=0.5)
@@ -534,7 +435,8 @@ def render_menu_criar_tarefa(users, rules):
         
         if st.form_submit_button("Enviar"):
             if colab and atv:
-                if not foto_upload: st.error("⚠️ A foto de evidência inicial é OBRIGATÓRIA para criar a tarefa.")
+                if not foto_upload:
+                    st.error("⚠️ A foto de evidência inicial é OBRIGATÓRIA para criar a tarefa.")
                 else:
                     cid = users[users['nome'] == colab].iloc[0]['id_login']
                     val = 0.0
@@ -543,6 +445,7 @@ def render_menu_criar_tarefa(users, rules):
                         if not val_lookup.empty: val = val_lookup.values[0]
 
                     if atv == "5S" and verificar_limite_diario_atividade(cid, "5S"): val = 0.0
+
                     path_evidencia = ""
                     task_id_new = str(uuid.uuid4())
                     
@@ -559,7 +462,11 @@ def render_menu_criar_tarefa(users, rules):
                     prazo_calculado = (get_time_br() + timedelta(hours=prazo_horas)).strftime("%Y-%m-%d %H:%M:%S")
 
                     confs_disponiveis = get_conferentes_disponiveis(users, st.session_state.get('user_id'))
-                    sorteado_id = str(random.choice(confs_disponiveis['id_login'].tolist())) if not confs_disponiveis.empty else "SISTEMA"
+                    
+                    if not confs_disponiveis.empty:
+                        sorteado_id = str(random.choice(confs_disponiveis['id_login'].tolist()))
+                    else:
+                        sorteado_id = "SISTEMA"
 
                     task = {
                         'id_task': task_id_new, 'colaborador_id': str(cid), 'conferente_id': sorteado_id,
@@ -572,44 +479,47 @@ def render_menu_criar_tarefa(users, rules):
                         'qtd_produzida': 0, 'evidencia_img': path_evidencia, 'prazo': prazo_calculado
                     }
                     add_task_safe(task)
-                    st.success(f"Tarefa criada para {colab}!")
+                    st.success(f"Tarefa criada para {colab} com prazo de {prazo_horas}h! Turno Atual: {get_turno_atual()}")
             else: st.error("Selecione colaborador e atividade")
 
 def render_menu_aprovar_tarefas(users, tasks):
     st.title("✅ Aprovação")
     if not tasks.empty:
-        pends = tasks[(tasks['status'] == 'Aguardando Aprovação') & (~tasks['atividade'].isin(TODOS_KPIS))].copy()
+        pends = tasks[(tasks['status'] == 'Aguardando Aprovação') & (~tasks['atividade'].isin(TODOS_KPIS))]
         
         if st.session_state.get('role') == 'Conferente':
             nome_usuario = str(st.session_state.get('user_name', '')).upper()
-            meu_id = clean_id(st.session_state['user_id'])
-            if meu_id in [clean_id(x) for x in CONFERENTES_BLOQUEADOS] or 'WEUDES' in nome_usuario or 'JULIANO' in nome_usuario:
+            meu_id = str(st.session_state['user_id']).replace('.0', '')
+            
+            if meu_id in CONFERENTES_BLOQUEADOS or 'WEUDES' in nome_usuario or 'JULIANO' in nome_usuario:
                 st.error("🔒 O seu acesso para aprovação está suspenso/bloqueado.")
                 return
-            pends['conf_clean'] = pends['conferente_id'].apply(clean_id)
-            pends = pends[pends['conf_clean'] == meu_id]
+                
+            pends = pends[pends['conferente_id'].astype(str).str.replace('.0', '') == meu_id]
         
         if pends.empty: 
             st.info("Nenhuma tarefa pendente no momento.")
             return
-        
-        users['colab_clean'] = users['id_login'].apply(clean_id)
-        users['conf_clean'] = users['id_login'].apply(clean_id)
         
         for i, row in pends.iterrows():
             k_approve = f"ok_{row['id_task']}_{i}"
             k_reject_btn = f"rej_btn_{row['id_task']}_{i}"
             k_reason = f"reason_{row['id_task']}_{i}"
             
-            cname_df = users[users['colab_clean'] == clean_id(row['colaborador_id'])]
+            cname_df = users[users['id_login'].astype(str) == str(row['colaborador_id'])]
             nome_colab_tarefa = cname_df.iloc[0]['nome'] if not cname_df.empty else 'Desconhecido'
             tipo_usuario = str(cname_df.iloc[0]['tipo']).upper() if not cname_df.empty else ""
             
-            conf_id_str = clean_id(row['conferente_id'])
+            conf_id_str = str(row['conferente_id']).strip().replace('.0', '')
+            
             if conf_id_str == 'SISTEMA': nome_conferente = "SISTEMA"
             else:
-                c_df = users[users['conf_clean'] == conf_id_str]
-                nome_conferente = c_df.iloc[0]['nome'] if not c_df.empty else f"ID {row['conferente_id']}"
+                users['id_temp'] = users['id_login'].astype(str).str.strip().apply(lambda x: str(x)[:-2] if str(x).endswith('.0') else str(x))
+                c_df = users[users['id_temp'] == conf_id_str]
+                nome_conferente = c_df.iloc[0]['nome'] if not c_df.empty else f"ID {conf_id_str}"
+                
+                if conf_id_str in CONFERENTES_BLOQUEADOS or 'WEUDES' in nome_conferente.upper() or 'JULIANO' in nome_conferente.upper():
+                    nome_conferente = f"⚠️ {nome_conferente} (BLOQUEADO)"
             
             is_operador = 'OPERADOR' in tipo_usuario
             valor_a_pagar = 0.0 if is_operador else float(row['valor'])
@@ -618,10 +528,14 @@ def render_menu_aprovar_tarefas(users, tasks):
                 st.markdown(f"**{nome_colab_tarefa}** - {row['atividade']}")
                 sku_info = row['sku_produto'] if pd.notna(row['sku_produto']) else "-"
                 
-                if st.session_state.get('role') == 'Supervisor': st.info(f"🚨 **Conferente Responsável:** {nome_conferente}")
-                else: st.caption(f"📦 Material: {sku_info} | 🔍 Responsável: **{nome_conferente}**")
+                if st.session_state.get('role') == 'Supervisor':
+                    st.info(f"🚨 **Conferente Responsável:** {nome_conferente}")
+                    st.caption(f"📦 Material: {sku_info}")
+                else:
+                    st.caption(f"📦 Material: {sku_info} | 🔍 Responsável: **{nome_conferente}**")
                 
-                st.write(f"📅 **Criada em:** {row['data_criacao']}")
+                st.write(f"📅 **Criada em:** {row['data_criacao']} | ✅ **Finalizada em:** {row.get('fim_execucao', '-')}")
+
                 c1, c2 = st.columns(2)
                 c1.write(f"⏱️ {row['tempo_total_min']} min")
                 
@@ -630,6 +544,7 @@ def render_menu_aprovar_tarefas(users, tasks):
                 else: c1.info(f"Qtd: {row['qtd_produzida']}")
                 
                 c1.metric("A Pagar", format_currency(valor_a_pagar))
+                
                 img_url = get_media_url(row['evidencia_img'])
                 if img_url:
                     ext = img_url.split('.')[-1].lower()
@@ -637,6 +552,7 @@ def render_menu_aprovar_tarefas(users, tasks):
                     else:
                         try: c2.image(img_url, width=200, caption="Evidência")
                         except: c2.error("Erro ao carregar imagem")
+                else: c2.warning("Ficheiro não encontrado.")
                 
                 b1, b2 = st.columns(2)
                 if b1.button("✅ Aprovar", key=k_approve):
@@ -654,9 +570,34 @@ def render_menu_aprovar_tarefas(users, tasks):
                 st.divider()
     else: st.info("Sem tarefas.")
 
+# --- TELAS DO SISTEMA ---
+def login_screen():
+    st.markdown("<h1 style='text-align: center; color: #0054a6;'>ProTrack Logística 🚛</h1>", unsafe_allow_html=True)
+    col1, col2, col3 = st.columns([1,2,1])
+    with col2:
+        st.info("Insira o seu ID ou Matrícula")
+        lid = st.text_input("ID").strip()
+        if st.button("ENTRAR"):
+            users = get_data("users")
+            if users.empty:
+                st.error("Base de utilizadores não encontrada no Google Sheets.")
+                return
+
+            users['id_temp'] = users['id_login'].astype(str).str.strip().apply(lambda x: str(x)[:-2] if str(x).endswith('.0') else str(x))
+            lid_str = lid
+            if lid_str.endswith('.0'): lid_str = lid_str[:-2]
+            
+            user = users[users['id_temp'] == lid_str]
+            if not user.empty:
+                st.query_params["uid"] = lid_str
+                time.sleep(0.1)
+                st.rerun()
+            else: st.error("Utilizador não cadastrado.")
+
 def interface_supervisor():
     st.sidebar.header(f"👮 {st.session_state.get('user_name', 'Sup')}")
     menu = st.sidebar.radio("Menu", ["Criar Tarefa", "Aprovar Tarefas", "Validar KPIs", "Ajustes Financeiros", "Ranking", "Regras & Valores", "Sair"])
+    
     if menu == "Sair": do_logout()
     elif menu == "Regras & Valores": interface_regras()
     
@@ -673,17 +614,17 @@ def interface_supervisor():
             pendentes = tasks[(tasks['status'] == 'Aguardando Validação') & (tasks['atividade'].isin(TODOS_KPIS))]
             if pendentes.empty: st.info("Tudo validado!")
             else:
-                users['colab_clean'] = users['id_login'].apply(clean_id)
                 for i, row in pendentes.iterrows():
                     k_ok = f"btn_ok_{row['id_task']}_{i}"
                     k_nok = f"btn_nok_{row['id_task']}_{i}"
-                    cname = users[users['colab_clean'] == clean_id(row['colaborador_id'])]['nome'].values
+                    cname = users[users['id_login'].astype(str) == str(row['colaborador_id'])]['nome'].values
                     nome_colab = cname[0] if len(cname) > 0 else row['colaborador_id']
                     
                     with st.container():
                         col1, col2, col3 = st.columns([3, 1, 1])
                         val = float(row['valor'])
                         status_user = "OK" if val > 0 else "NOK"
+                        
                         col1.markdown(f"**{nome_colab}** | {row['atividade']} | Declarado: **{status_user}** ({format_currency(val)})")
                         if col2.button("✅ Confirmar", key=k_ok):
                             if update_rv_safe(row['colaborador_id'], val):
@@ -709,7 +650,7 @@ def interface_supervisor():
             colab = st.selectbox("Colaborador", ops)
             tipo = st.radio("Tipo de Ajuste", ["Crédito (+)", "Débito (-)"], horizontal=True)
             valor = st.number_input("Valor (R$)", min_value=0.0, step=0.5)
-            motivo = st.text_input("Motivo (Ex: Bónus Meta Semanal)")
+            motivo = st.text_input("Motivo (Ex: Bónus Meta Semanal, Quebra de Material)")
             
             if st.form_submit_button("PROCESSAR AJUSTE"):
                 if valor > 0 and motivo:
@@ -727,10 +668,11 @@ def interface_supervisor():
                             'qtd_produzida': 0, 'evidencia_img': "", 'prazo': '2099-12-31 23:59:59'
                         }
                         add_task_safe(task)
-                        st.success(f"Ajuste de {format_currency(valor_final)} efetuado.")
+                        st.success(f"Sucesso! Ajuste de {format_currency(valor_final)} efetuado.")
                         time.sleep(1)
                         st.rerun()
                     else: st.error("Erro ao atualizar saldo.")
+                else: st.warning("Insira o valor e o motivo.")
 
     elif menu == "Ranking":
         st.title("🏆 Ranking Geral")
@@ -740,17 +682,19 @@ def interface_supervisor():
 
 def interface_operador():
     if 'role' not in st.session_state or 'user_id' not in st.session_state: do_logout()
-    st.sidebar.header(f"⚙️ {st.session_state['user_name']}")
+    st.sidebar.header(f"👷 {st.session_state['user_name']}")
     opcoes_menu = ["Tarefas", "Auto-Cadastro", "Dashboard", "Regras & Valores", "Sair"]
     if st.session_state.get('role') == 'Operador': opcoes_menu.insert(0, "🚀 KPIs Diários")
         
     menu = st.sidebar.radio("Menu", opcoes_menu)
     uid = st.session_state['user_id']
+    
     if menu == "Sair": do_logout()
     elif menu == "Regras & Valores": interface_regras()
     elif menu == "🚀 KPIs Diários" and st.session_state.get('role') == 'Operador':
         st.title("🚀 Metas do Dia")
         rules = get_data("rules")
+        
         def get_val(name):
             try: return float(rules[rules['atividade']==name]['valor'].values[0])
             except: return 0.0
@@ -758,10 +702,11 @@ def interface_operador():
         v_efc, v_efd, v_tma, v_res = get_val('EFC'), get_val('EFD'), get_val('TMA'), get_val('RESSUPRIMENTO')
         hoje = get_time_br().strftime("%d/%m")
         tasks = get_data("tasks")
+        
         ja_fez = False
         if not tasks.empty:
-            tasks['colab_clean'] = tasks['colaborador_id'].apply(clean_id)
-            ja_fez = not tasks[(tasks['colab_clean']==clean_id(uid)) & (tasks['data_criacao'].str.contains(hoje)) & (tasks['atividade'].isin(KPI_OPERADOR))].empty
+            tasks['colaborador_id'] = tasks['colaborador_id'].astype(str)
+            ja_fez = not tasks[(tasks['colaborador_id']==uid) & (tasks['data_criacao'].str.contains(hoje)) & (tasks['atividade'].isin(KPI_OPERADOR))].empty
         
         if ja_fez: st.info("✅ KPIs de hoje já enviados e aguardam validação.")
         else:
@@ -795,8 +740,7 @@ def interface_operador():
     elif menu == "Dashboard":
         st.title("📊 O Seu Desempenho")
         users = get_data("users")
-        users['colab_clean'] = users['id_login'].apply(clean_id)
-        meu_saldo = users[users['colab_clean'] == clean_id(uid)]['rv_acumulada'].values
+        meu_saldo = users[users['id_login'].astype(str) == uid]['rv_acumulada'].values
         saldo_real = float(meu_saldo[0]) if len(meu_saldo) > 0 else 0.0
         saldo_exibido = min(saldo_real, LIMITE_RV_OPERADOR)
         
@@ -805,8 +749,7 @@ def interface_operador():
         soma_kpis = 0.0
 
         if not tasks.empty:
-            tasks['colab_clean'] = tasks['colaborador_id'].apply(clean_id)
-            minhas = tasks[(tasks['colab_clean'] == clean_id(uid)) & (tasks['status'] == 'Executada')]
+            minhas = tasks[(tasks['colaborador_id'].astype(str) == uid) & (tasks['status'] == 'Executada')]
             total_tarefas = len(minhas)
             kpi_tasks = minhas[minhas['atividade'].isin(KPI_OPERADOR)]
             if not kpi_tasks.empty: soma_kpis = kpi_tasks['valor'].sum()
@@ -814,21 +757,26 @@ def interface_operador():
         c1, c2, c3 = st.columns(3)
         c1.metric("💰 Saldo Total (RV)", format_currency(saldo_exibido))
         c2.metric("📦 Tarefas Executadas", total_tarefas)
+        
         if st.session_state.get('role') == 'Operador': c3.metric("🎯 Ganho com KPIs", format_currency(soma_kpis))
         else: c3.metric("⭐ Status", "Ativo") 
 
+        if saldo_real > LIMITE_RV_OPERADOR:
+            st.warning(f"🔒 Teto de RV atingido! O seu acumulado real é {format_currency(saldo_real)}, mas o pagamento é limitado a {format_currency(LIMITE_RV_OPERADOR)}.")
+
         st.subheader("Histórico Recente")
         if not tasks.empty:
-            hist = tasks[(tasks['colaborador_id'].apply(clean_id) == clean_id(uid))].sort_values('data_criacao', ascending=False).head(10)
+            hist = tasks[(tasks['colaborador_id'].astype(str) == uid)].sort_values('data_criacao', ascending=False).head(10)
             st.dataframe(hist[['data_criacao', 'atividade', 'status', 'valor']], use_container_width=True)
 
 def interface_conferente():
     nome_usuario = str(st.session_state.get('user_name', '')).upper()
-    meu_id = clean_id(st.session_state['user_id'])
+    meu_id = str(st.session_state['user_id']).replace('.0', '')
     
-    if meu_id in [clean_id(x) for x in CONFERENTES_BLOQUEADOS] or 'WEUDES' in nome_usuario or 'JULIANO' in nome_usuario:
+    if meu_id in CONFERENTES_BLOQUEADOS or 'WEUDES' in nome_usuario or 'JULIANO' in nome_usuario:
         st.sidebar.error("Acesso de Aprovação Suspenso")
         st.title("🔒 Bloqueio de Sistema")
+        st.error("O seu perfil foi restrito para criar ou aprovar tarefas.")
         if st.button("Sair"): do_logout()
         return
 
@@ -843,44 +791,55 @@ def interface_conferente():
     elif menu == "Criar Tarefa": render_menu_criar_tarefa(users, rules)
     elif menu == "Aprovar Tarefas": render_menu_aprovar_tarefas(users, tasks)
 
-# --- INTERFACES COMPLEMENTARES ---
+# --- FUNÇÕES REUTILIZÁVEIS ---
 def interface_colaborador_tarefas(uid):
     tasks = get_data("tasks")
     users = get_data("users")
     st.title("🗂️ Tarefas")
+    
     if tasks.empty:
         st.info("Nenhuma tarefa encontrada.")
         return
 
-    tasks['colab_clean'] = tasks['colaborador_id'].apply(clean_id)
-    mask_pend = (tasks['colab_clean'] == clean_id(uid)) & (tasks['status'].isin(['Pendente', 'Em Execução', 'Rejeitada'])) & (~tasks['atividade'].isin(TODOS_KPIS))
+    tasks['colaborador_id'] = tasks['colaborador_id'].astype(str)
+    mask_pend = (tasks['colaborador_id'] == str(uid)) & \
+                (tasks['status'].isin(['Pendente', 'Em Execução', 'Rejeitada'])) & \
+                (~tasks['atividade'].isin(TODOS_KPIS))
     todo = tasks[mask_pend].copy()
+    
     if todo.empty: 
         st.info("Nenhuma tarefa pendente.")
         return
         
     todo['prazo_dt'] = pd.to_datetime(todo['prazo'], errors='coerce').fillna(pd.Timestamp('2099-12-31 23:59:59'))
     todo = todo.sort_values(by='prazo_dt', ascending=True)
-    users['conf_clean'] = users['id_login'].apply(clean_id)
+    
+    users['id_temp'] = users['id_login'].astype(str).str.strip().apply(lambda x: str(x)[:-2] if str(x).endswith('.0') else str(x))
     
     for i, row in todo.iterrows():
         k_init = f"init_{row['id_task']}"
         k_end = f"end_{row['id_task']}"
+        
         prazo_exibicao = ""
         try:
             dt_p = pd.to_datetime(row['prazo'])
             if dt_p.year < 2090: prazo_exibicao = f" | ⏳ Prazo: {dt_p.strftime('%d/%m %H:%M')}"
         except: pass
             
-        conf_id_str = clean_id(row['conferente_id'])
+        conf_id_str = str(row['conferente_id']).strip()
+        if conf_id_str.endswith('.0'): conf_id_str = conf_id_str[:-2]
+        
         if conf_id_str == 'SISTEMA': nome_passou = "SISTEMA"
         else:
-            c_df = users[users['conf_clean'] == conf_id_str]
-            nome_passou = c_df.iloc[0]['nome'] if not c_df.empty else f"ID {row['conferente_id']}"
+            c_df = users[users['id_temp'] == conf_id_str]
+            nome_passou = c_df.iloc[0]['nome'] if not c_df.empty else f"ID {conf_id_str}"
         
         with st.expander(f"{row['atividade']} ({row['status']}){prazo_exibicao}", expanded=True):
             st.markdown(f"👤 **Aprovador Responsável:** `{nome_passou}`")
-            st.write(f"📍 **Local:** {row['area']} | 📦 **Material:** {row['sku_produto']}")
+            st.write(f"📅 **Data/Hora Criação:** {row['data_criacao']}")
+            st.write(f"📍 **Local:** {row['area']}")
+            st.write(f"📦 **Material:** {row['sku_produto']}")
+            st.write(f"📝 **Obs:** {row['descricao']}")
             
             img_url = get_media_url(row.get('evidencia_img', ''))
             if img_url:
@@ -903,16 +862,19 @@ def interface_colaborador_tarefas(uid):
 
             if st.session_state.get('f_id') == row['id_task']:
                 st.markdown("---")
+                st.write("📝 Detalhes da Execução")
+                
                 tempo_final = 1
                 try:
                     if row['inicio_execucao'] and row['inicio_execucao'] != "-":
                         start_time = pd.to_datetime(row['inicio_execucao'], format="%d/%m/%Y %H:%M:%S")
                         end_time = pd.to_datetime(get_time_br())
-                        tempo_final = int(round((end_time - start_time).total_seconds() / 60))
-                except: tempo_final = 1
-                if tempo_final < 1: tempo_final = 1
+                        diff_min = (end_time - start_time).total_seconds() / 60
+                        tempo_final = int(round(diff_min))
+                except Exception as e: tempo_final = 1
                 
-                st.info(f"⏱️ Tempo calculado: **{tempo_final} min**")
+                if tempo_final < 1: tempo_final = 1
+                st.info(f"⏱️ Tempo calculado: **{tempo_final} min** (Automático)")
 
                 with st.form(f"form_fim_{row['id_task']}"):
                     qtd = 1.0
@@ -926,7 +888,10 @@ def interface_colaborador_tarefas(uid):
                         ow = c3.number_input("OW", 0)
                         ln = c4.number_input("LN", 0)
                         val_calc = (lata*0.10)+(pet*0.15)+(ow*0.20)+(ln*0.20)
-                    elif row['atividade'] in ATIVIDADES_SEM_QUANTIDADE: val_calc = float(row['valor'])
+                    elif row['atividade'] in ATIVIDADES_SEM_QUANTIDADE: 
+                        st.info("Atividade com valor fixo por execução.")
+                        val_calc = float(row['valor'])
+                        qtd = 1.0
                     elif row['atividade'] in ATIVIDADES_POR_CARRO:
                         qtd = st.number_input("Qtd Carros", 1.0)
                         val_calc = float(row['valor']) * qtd
@@ -934,9 +899,15 @@ def interface_colaborador_tarefas(uid):
                         qtd = st.number_input("Qtd Paletes/Unid", 1.0)
                         val_calc = float(row['valor']) * qtd
                     
-                    if st.session_state.get('role') == 'Operador': val_calc = 0.0
+                    if st.session_state.get('role') == 'Operador':
+                        val_calc = 0.0
+                        st.info("💡 Como Operador, a sua remuneração variável contabiliza exclusivamente os KPIs. Esta tarefa soma R$ 0,00 ao seu saldo.")
+                    elif row['atividade'] == '5S' and val_calc == 0.0:
+                        st.info("💡 Limite de 1 pagamento diário para 5S já atingido. Somente a produtividade será registrada (R$ 0,00).")
+
                     st.write(f"**Valor Final:** {format_currency(val_calc)}")
-                    foto = st.file_uploader("Foto Evidência Final (Obrigatória)")
+                    st.markdown("**📸 Foto Obrigatória para concluir**")
+                    foto = st.file_uploader("Foto Evidência Final")
                     
                     if st.form_submit_button("CONCLUIR"):
                         if not foto: st.error("⚠️ Precisa anexar uma foto para finalizar!")
@@ -961,42 +932,59 @@ def interface_colaborador_auto(uid):
     st.title("🙋 Auto-Cadastro")
     rules = get_data("rules")
     users = get_data("users")
+    
     confs_df = get_conferentes_disponiveis(users, st.session_state.get('user_id'))
     confs = confs_df['nome'].tolist()
     
+    ops = users[~users['tipo'].str.lower().str.contains('conferente|supervisor', na=False, regex=True)]['nome'].tolist()
+    
+    st.info(f"🕒 Exibindo Aprovadores do Turno **{get_turno_atual()}**")
+    
     if not confs:
-        st.warning("Nenhum conferente disponível no momento.")
+        st.warning("Nenhum conferente disponível para o turno atual. Contate o administrador.")
         colab_sel = None
-    else: colab_sel = st.selectbox("Quem aprova?", confs)
+    else:
+        colab_sel = st.selectbox("Quem aprova?", confs)
     
     atvs = [a for a in rules['atividade'].tolist() if a not in TODOS_KPIS] if not rules.empty else []
     atv = st.selectbox("Atividade", atvs)
+
     sku_resultado = "-"
     if atv and atv not in ATIVIDADES_SEM_SKU:
         st.markdown("---")
         sku_resultado = buscar_sku_interface_v2()
         st.markdown("---")
-    else: sku_resultado = "N/A"
+    else:
+        st.info("SKU não obrigatório.")
+        sku_resultado = "N/A"
         
     with st.form("auto_c"):
         loc = st.text_input("Local")
         obs = st.text_area("Obs")
-        prazo_horas = st.number_input("Prazo (Horas)", min_value=0.5, value=2.0, step=0.5)
+        prazo_horas = st.number_input("Prazo para Execução (Horas)", min_value=0.5, value=2.0, step=0.5)
         foto_init = st.file_uploader("Foto Inicial (Obrigatória)")
         
         if st.form_submit_button("CRIAR TAREFA"):
             if colab_sel and atv:
-                if not foto_init: st.error("⚠️ A foto inicial é OBRIGATÓRIA.")
+                if not foto_init:
+                    st.error("⚠️ A foto de evidência inicial é OBRIGATÓRIA para criar a tarefa.")
                 else:
-                    conf_id = users[users['nome'] == colab_sel].iloc[0]['id_login']
+                    try: 
+                        conf_id = users[users['nome'] == colab_sel].iloc[0]['id_login']
+                    except:
+                        st.error("Aprovador inválido")
+                        return
+
                     val = 0.0
                     val_lookup = rules.loc[rules['atividade'] == atv, 'valor']
                     if not val_lookup.empty: val = val_lookup.values[0]
+                    
                     if atv == "5S" and verificar_limite_diario_atividade(uid, "5S"): val = 0.0
                     if st.session_state.get('role') == 'Operador': val = 0.0
 
                     path_init = ""
                     task_id = str(uuid.uuid4())
+                    
                     if foto_init:
                         ext = foto_init.name.split('.')[-1].lower()
                         base_name = generate_media_name(st.session_state['user_name'], atv, sku_resultado, "AUTO_INICIAL")
@@ -1005,16 +993,20 @@ def interface_colaborador_auto(uid):
                         upload_media_to_github(path_init)
                         
                     prazo_calculado = (get_time_br() + timedelta(hours=prazo_horas)).strftime("%Y-%m-%d %H:%M:%S")
+
                     task = {
                         'id_task': task_id, 'colaborador_id': str(uid), 'conferente_id': str(conf_id),
-                        'atividade': atv, 'area': loc, 'descricao': obs, 'sku_produto': sku_resultado, 
-                        'prioridade': 'Média', 'status': 'Pendente', 'valor': float(val), 'data_criacao': get_time_br().strftime("%d/%m %H:%M"),
+                        'atividade': atv, 'area': loc, 'descricao': obs,
+                        'sku_produto': sku_resultado, 'prioridade': 'Média', 'status': 'Pendente',
+                        'valor': float(val), 'data_criacao': get_time_br().strftime("%d/%m %H:%M"),
                         'inicio_execucao': None, 'fim_execucao': None, 'tempo_total_min': 0, 'obs_rejeicao': '',
-                        'qtd_lata': 0, 'qtd_pet': 0, 'qtd_oneway': 0, 'qtd_longneck': 0, 'qtd_produzida': 0, 'evidencia_img': path_init, 'prazo': prazo_calculado
+                        'qtd_lata': 0, 'qtd_pet': 0, 'qtd_oneway': 0, 'qtd_longneck': 0,
+                        'qtd_produzida': 0, 'evidencia_img': path_init, 'prazo': prazo_calculado
                     }
                     add_task_safe(task)
                     st.success("Auto-cadastro realizado!")
-            else: st.error("Preencha todos os campos obrigatórios.")
+            else: 
+                st.error("Preencha a Atividade e a Área e certifique-se de que há um aprovador selecionado.")
 
 # --- ROTEAMENTO E PERSISTÊNCIA ---
 if 'user_id' not in st.session_state:
@@ -1023,6 +1015,7 @@ if 'user_id' not in st.session_state:
 else:
     if 'uid' not in st.query_params: st.query_params['uid'] = st.session_state['user_id']
     r = st.session_state.get('role', 'Colaborador')
+    
     if r == 'Supervisor': interface_supervisor()
     elif r == 'Operador': interface_operador()
     elif r == 'Conferente': interface_conferente()
