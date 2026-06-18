@@ -1,7 +1,7 @@
 streamlit
 pandas
-office365-rest-python-client
-PyGithub
-requests
-python-dateutil
-
+github
+google-auth
+google-auth-oauthlib
+google-auth-httplib2
+google-api-python-client
