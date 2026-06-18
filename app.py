@@ -10,12 +10,9 @@ from github import Github
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="ProTrack Logística", layout="wide", page_icon="🚛")
 
-# --- IMPORTAÇÕES PARA O GOOGLE DRIVE ---
-from google.oauth2 import service_account
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
-import io
-import mimetypes
+# --- IMPORTAÇÕES PARA O GOOGLE SHEETS ---
+import gspread
+from google.oauth2.service_account import Credentials
 
 # --- ESTILOS CSS ---
 st.markdown("""
@@ -46,7 +43,7 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# --- CONFIGURAÇÕES GLOBAIS DE ATIVIDADES ---
+# --- CONFIGURAÇÕES GLOBAIS ---
 ATIVIDADES_POR_CARRO = ["DESCARREGAMENTO DE VAN"]
 ATIVIDADES_SEM_QUANTIDADE = ["AMARRAÇÃO", "MÁQUINA LIMPEZA", "5S"]
 
@@ -64,10 +61,7 @@ ATIVIDADES_SEM_SKU = [
 ]
 
 SUPERVISORES_PERMITIDOS = ['99849441', '99813623', '99797465']
-
-# Trava de IDs antigas
 CONFERENTES_BLOQUEADOS = ['05480968', '5480968', '05471598', '5471598'] 
-
 LIMITE_RV_OPERADOR = 380.00  
 
 NOVAS_REGRAS = [
@@ -118,9 +112,7 @@ NOVAS_REGRAS = [
     {"atividade": "RETIRAR PRODUTOS SELO VERMELHO", "valor": 0.00}
 ]
 
-FILES_PATH = "data"
 IMGS_PATH = "images"
-os.makedirs(FILES_PATH, exist_ok=True)
 os.makedirs(IMGS_PATH, exist_ok=True)
 
 def format_currency(value):
@@ -132,91 +124,114 @@ def get_time_br():
 
 def get_turno_atual():
     hora = get_time_br().hour
-    if 6 <= hora < 14:
-        return 'A'
-    elif 14 <= hora < 22:
-        return 'B'
-    else:
-        return 'C'
+    if 6 <= hora < 14: return 'A'
+    elif 14 <= hora < 22: return 'B'
+    else: return 'C'
 
-# --- INTEGRAÇÃO DIRETA COM O GOOGLE DRIVE ---
-def get_drive_service():
+def clean_id(x):
+    if pd.isna(x): return ""
+    s = str(x).strip().replace('.0', '')
+    return s.lstrip('0') if s != '0' else '0'
+
+# --- CONEXÃO 100% GOOGLE SHEETS ---
+def get_gspread_client():
     if "gcp_service_account" in st.secrets:
         creds_dict = dict(st.secrets["gcp_service_account"])
-        SCOPES = ['https://www.googleapis.com/auth/drive']
-        creds = service_account.Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
-        return build('drive', 'v3', credentials=creds)
+        scopes = [
+            'https://www.googleapis.com/auth/spreadsheets',
+            'https://www.googleapis.com/auth/drive'
+        ]
+        creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+        return gspread.authorize(creds)
     return None
 
-def sync_from_drive(filename):
-    path = f"{FILES_PATH}/{filename}.csv"
-    if os.path.exists(path):
-        if (time.time() - os.path.getmtime(path)) < 15:
-            return 
+def get_data(filename):
+    client = get_gspread_client()
+    if not client:
+        st.error("Erro: Credenciais do Google Sheets ausentes nos Secrets.")
+        return pd.DataFrame()
+        
+    sheet_id = st.secrets.get("SPREADSHEET_ID", "")
+    if not sheet_id:
+        st.error("Erro: SPREADSHEET_ID não configurado nos Secrets.")
+        return pd.DataFrame()
+        
     try:
-        service = get_drive_service()
-        if not service: 
-            st.error("Erro: Serviço do Google Drive não inicializado. Verifique os Secrets.")
-            return
+        doc = client.open_by_key(sheet_id)
+        worksheet = doc.worksheet(filename)
+        data = worksheet.get_all_values()
         
-        folder_id = st.secrets.get("DRIVE_FOLDER_DATA_ID", "")
-        if not folder_id: 
-            st.error("Erro: DRIVE_FOLDER_DATA_ID não configurado nos Secrets.")
-            return
-        
-        query = f"(name='{filename}.csv' or name='{filename}') and '{folder_id}' in parents and trashed=false"
-        results = service.files().list(q=query, fields="files(id, name, mimeType)").execute()
-        items = results.get('files', [])
-
-        if items:
-            file_id = items[0]['id']
-            mime_type = items[0].get('mimeType', '')
-            
-            if "google-apps.spreadsheet" in mime_type:
-                request = service.files().export_media(fileId=file_id, mimeType='text/csv')
+        # Se a aba estiver vazia, cria e devolve a estrutura base
+        if not data:
+            if filename == 'tasks':
+                cols = ['id_task', 'colaborador_id', 'conferente_id', 'atividade', 'area', 'descricao', 
+                        'sku_produto', 'prioridade', 'status', 'valor', 'data_criacao', 'inicio_execucao', 
+                        'fim_execucao', 'tempo_total_min', 'obs_rejeicao', 'qtd_lata', 'qtd_pet', 
+                        'qtd_oneway', 'qtd_longneck', 'qtd_produzida', 'evidencia_img', 'prazo']
+                return pd.DataFrame(columns=cols)
+            elif filename == 'users':
+                return pd.DataFrame(columns=['nome', 'id_login', 'tipo', 'rv_acumulada', 'turno'])
+            elif filename == 'rules':
+                df_novo = pd.DataFrame(NOVAS_REGRAS)
+                save_data(df_novo, 'rules')
+                return df_novo
+            elif filename == 'sku':
+                return pd.DataFrame(columns=['codigo', 'descricao'])
             else:
-                request = service.files().get_media(fileId=file_id)
-                
-            with open(path, 'wb') as f:
-                downloader = MediaIoBaseDownload(f, request)
-                done = False
-                while not done:
-                    status, done = downloader.next_chunk()
-        else:
-            st.warning(f"Aviso: Ficheiro '{filename}' não foi encontrado no Google Drive. Será criado localmente.")
-    except Exception as e:
-        st.error(f"Erro crítico ao sincronizar '{filename}' do Google Drive: {e}")
+                return pd.DataFrame()
 
-def save_to_drive(filename):
-    try:
-        service = get_drive_service()
-        if not service: return
+        headers = data.pop(0)
+        df = pd.DataFrame(data, columns=headers)
         
-        folder_id = st.secrets.get("DRIVE_FOLDER_DATA_ID", "")
-        if not folder_id: return
-        
-        file_path = f"{FILES_PATH}/{filename}.csv"
-        full_name = f"{filename}.csv"
-
-        query = f"name='{full_name}' and '{folder_id}' in parents and trashed=false"
-        results = service.files().list(q=query, fields="files(id, name)").execute()
-        items = results.get('files', [])
-
-        media = MediaFileUpload(file_path, mimetype='text/csv', resumable=True)
-
-        if not items:
-            file_metadata = {'name': full_name, 'parents': [folder_id]}
-            service.files().create(body=file_metadata, media_body=media, fields='id').execute()
-        else:
-            file_id = items[0]['id']
-            service.files().update(fileId=file_id, media_body=media).execute()
+        if filename == 'tasks':
+            if 'prazo' not in df.columns: df['prazo'] = '2099-12-31 23:59:59'
+            df['valor'] = pd.to_numeric(df['valor'].astype(str).str.replace(',', '.'), errors='coerce').fillna(0.0)
+            df['tempo_total_min'] = pd.to_numeric(df['tempo_total_min'].astype(str).str.replace(',', '.'), errors='coerce').fillna(0.0)
             
-            if len(items) > 1:
-                for dup in items[1:]:
-                    try: service.files().delete(fileId=dup['id']).execute()
-                    except: pass
+        elif filename == 'users':
+            df.rename(columns={'Colaborador': 'nome', 'Id_colaborador': 'id_login', 'Cargo': 'tipo', 'Turno': 'turno'}, inplace=True)
+            if 'rv_acumulada' not in df.columns: df['rv_acumulada'] = 0.0
+            if 'turno' not in df.columns: df['turno'] = '-' 
+            df['rv_acumulada'] = pd.to_numeric(df['rv_acumulada'].astype(str).str.replace(',', '.'), errors='coerce').fillna(0.0)
+            
+        elif filename == 'rules':
+            df['valor'] = pd.to_numeric(df['valor'].astype(str).str.replace(',', '.'), errors='coerce').fillna(0.0)
+            
+        return df
+
+    except gspread.exceptions.WorksheetNotFound:
+        st.error(f"⚠️ A aba '{filename}' não existe na sua Planilha Google! Por favor, crie uma aba vazia com o nome '{filename}'.")
+        return pd.DataFrame()
     except Exception as e:
-        st.error(f"Erro ao guardar/atualizar o ficheiro '{filename}' no Google Drive: {e}")
+        st.error(f"Erro ao ler do Google Sheets ({filename}): {e}")
+        return pd.DataFrame()
+
+def save_data(df, filename):
+    client = get_gspread_client()
+    if not client: return
+    sheet_id = st.secrets.get("SPREADSHEET_ID", "")
+    if not sheet_id: return
+    
+    try: 
+        doc = client.open_by_key(sheet_id)
+        worksheet = doc.worksheet(filename)
+        
+        df_out = df.copy()
+        if filename == 'users':
+            if 'rv_acumulada' in df_out.columns:
+                df_out['rv_acumulada'] = pd.to_numeric(df_out['rv_acumulada'], errors='coerce').fillna(0.0)
+                df_out['rv_acumulada'] = df_out['rv_acumulada'].apply(lambda x: f"{x:.2f}".replace('.', ','))
+            df_out.rename(columns={'nome': 'Colaborador', 'id_login': 'Id_colaborador', 'tipo': 'Cargo', 'turno': 'Turno'}, inplace=True)
+
+        if filename == 'tasks' and 'valor' in df_out.columns:
+            df_out['valor'] = pd.to_numeric(df_out['valor'], errors='coerce').fillna(0.0)
+            df_out['valor'] = df_out['valor'].apply(lambda x: f"{x:.2f}".replace('.', ','))
+            
+        df_out = df_out.fillna('') 
+        worksheet.clear()
+        worksheet.update(values=[df_out.columns.values.tolist()] + df_out.values.tolist())
+    except Exception as e: 
+        st.error(f"Erro ao salvar em '{filename}' no Google Sheets: {e}")
 
 # --- FUNÇÕES DE IMAGEM PARA O GITHUB ---
 def get_github_repo():
@@ -240,113 +255,31 @@ def upload_media_to_github(file_path):
 
 def get_media_url(local_path):
     if not local_path or pd.isna(local_path): return ""
-    if os.path.exists(local_path): return local_path
-    
     repo_name = st.secrets.get("GITHUB_REPO", "")
     if repo_name:
         return f"https://raw.githubusercontent.com/{repo_name}/main/{local_path}"
-    return ""
+    return local_path
 
 def generate_media_name(usuario, atividade, sku, sufixo=""):
     nome_safe = str(usuario).strip().replace(" ", "_").upper()
     atv_safe = str(atividade).strip().replace(" ", "_").replace("/", "-").upper()
     
-    if not sku or sku in ["-", "N/A"]:
-        sku_safe = "SEM_SKU"
-    else:
-        sku_safe = str(sku).split(" - ")[0].strip().replace(" ", "_").upper()
+    if not sku or sku in ["-", "N/A"]: sku_safe = "SEM_SKU"
+    else: sku_safe = str(sku).split(" - ")[0].strip().replace(" ", "_").upper()
         
     data_safe = get_time_br().strftime("%d%m%Y_%H%M%S")
     sufixo_str = f"_{sufixo}" if sufixo else ""
     return f"{nome_safe}_{atv_safe}_{sku_safe}_{data_safe}{sufixo_str}"
 
-# --- GERENCIAMENTO DE DADOS ---
-def init_data():
-    if not os.path.exists(f"{FILES_PATH}/rules.csv"):
-        df_regras = pd.DataFrame(NOVAS_REGRAS)
-        df_regras.to_csv(f"{FILES_PATH}/rules.csv", index=False, sep=';', encoding='utf-8-sig')
-    
-    if not os.path.exists(f"{FILES_PATH}/users.csv"):
-        pd.DataFrame(columns=['Colaborador', 'Id_colaborador', 'Cargo', 'rv_acumulada', 'Turno']).to_csv(f"{FILES_PATH}/users.csv", sep=';', index=False, encoding='utf-8-sig')
-    
-    if not os.path.exists(f"{FILES_PATH}/tasks.csv"):
-        cols = ['id_task', 'colaborador_id', 'conferente_id', 'atividade', 'area', 'descricao', 
-                'sku_produto', 'prioridade', 'status', 'valor', 'data_criacao', 'inicio_execucao', 
-                'fim_execucao', 'tempo_total_min', 'obs_rejeicao', 'qtd_lata', 'qtd_pet', 
-                'qtd_oneway', 'qtd_longneck', 'qtd_produzida', 'evidencia_img', 'prazo']
-        pd.DataFrame(columns=cols).to_csv(f"{FILES_PATH}/tasks.csv", sep=';', index=False, encoding='utf-8-sig')
-
-    if not os.path.exists(f"{FILES_PATH}/sku.csv"):
-        pd.DataFrame(columns=['codigo', 'descricao']).to_csv(f"{FILES_PATH}/sku.csv", sep=';', index=False, encoding='utf-8-sig')
-
-def get_data(filename):
-    sync_from_drive(filename) 
-    path = f"{FILES_PATH}/{filename}.csv"
-    
-    if not os.path.exists(path):
-        init_data()
-        if not os.path.exists(path): return pd.DataFrame()
-
-    try:
-        try:
-            df = pd.read_csv(path, sep=';', encoding='utf-8-sig', dtype=str)
-        except UnicodeDecodeError:
-            df = pd.read_csv(path, sep=';', encoding='latin1', dtype=str)
-        
-        if filename == 'tasks':
-            required = ['id_task', 'colaborador_id', 'status', 'valor', 'atividade']
-            if df.empty or not all(c in df.columns for c in required):
-                 cols = ['id_task', 'colaborador_id', 'conferente_id', 'atividade', 'area', 'descricao', 
-                         'sku_produto', 'prioridade', 'status', 'valor', 'data_criacao', 'inicio_execucao', 
-                         'fim_execucao', 'tempo_total_min', 'obs_rejeicao', 'qtd_lata', 'qtd_pet', 
-                         'qtd_oneway', 'qtd_longneck', 'qtd_produzida', 'evidencia_img', 'prazo']
-                 return pd.DataFrame(columns=cols)
-            
-            if 'prazo' not in df.columns: df['prazo'] = '2099-12-31 23:59:59'
-            df['valor'] = pd.to_numeric(df['valor'].astype(str).str.replace(',', '.'), errors='coerce').fillna(0.0)
-            df['tempo_total_min'] = pd.to_numeric(df['tempo_total_min'].astype(str).str.replace(',', '.'), errors='coerce').fillna(0.0)
-            
-        elif filename == 'users':
-            df.rename(columns={'Colaborador': 'nome', 'Id_colaborador': 'id_login', 'Cargo': 'tipo', 'Turno': 'turno'}, inplace=True)
-            if 'rv_acumulada' not in df.columns: df['rv_acumulada'] = 0.0
-            if 'turno' not in df.columns: df['turno'] = '-' 
-            df['rv_acumulada'] = pd.to_numeric(df['rv_acumulada'].astype(str).str.replace(',', '.'), errors='coerce').fillna(0.0)
-            
-        elif filename == 'rules':
-            df['valor'] = pd.to_numeric(df['valor'].astype(str).str.replace(',', '.'), errors='coerce').fillna(0.0)
-            if len(df) < len(NOVAS_REGRAS):
-                df_novo = pd.DataFrame(NOVAS_REGRAS)
-                save_data(df_novo, 'rules')
-                return df_novo
-            
-        return df
-    except Exception as e:
-        st.error(f"Erro ao ler os dados locais de {filename}: {e}")
-        return pd.DataFrame()
-
-def save_data(df, filename):
-    try: 
-        df_out = df.copy()
-        if filename == 'users':
-            if 'rv_acumulada' in df_out.columns:
-                df_out['rv_acumulada'] = pd.to_numeric(df_out['rv_acumulada'], errors='coerce').fillna(0.0)
-                df_out['rv_acumulada'] = df_out['rv_acumulada'].apply(lambda x: f"{x:.2f}".replace('.', ','))
-            df_out.rename(columns={'nome': 'Colaborador', 'id_login': 'Id_colaborador', 'tipo': 'Cargo', 'turno': 'Turno'}, inplace=True)
-
-        if filename == 'tasks' and 'valor' in df_out.columns:
-            df_out['valor'] = pd.to_numeric(df_out['valor'], errors='coerce').fillna(0.0)
-            df_out['valor'] = df_out['valor'].apply(lambda x: f"{x:.2f}".replace('.', ','))
-        
-        df_out.to_csv(f"{FILES_PATH}/{filename}.csv", index=False, sep=';', encoding='utf-8-sig')
-        save_to_drive(filename)
-    except Exception as e: 
-        st.error(f"Erro ao guardar dados locais em {filename}: {e}")
-
+# --- GESTÃO DE TAREFAS E SALDOS ---
 def add_task_safe(task_dict):
     df = get_data("tasks")
-    new_row = pd.DataFrame([task_dict])
-    for col in df.columns: df[col] = df[col].astype(object)
-    df = pd.concat([df, new_row], ignore_index=True)
+    if df.empty:
+        df = pd.DataFrame([task_dict])
+    else:
+        new_row = pd.DataFrame([task_dict])
+        for col in df.columns: df[col] = df[col].astype(object)
+        df = pd.concat([df, new_row], ignore_index=True)
     save_data(df, "tasks")
 
 def update_task_safe(task_id, updates):
@@ -362,10 +295,10 @@ def update_task_safe(task_id, updates):
 
 def update_rv_safe(user_id, amount):
     df = get_data("users")
-    uid_str = str(user_id).strip()
-    if uid_str.endswith('.0'): uid_str = uid_str[:-2]
+    if df.empty: return False
+    uid_str = clean_id(user_id)
     
-    df['id_temp'] = df['id_login'].astype(str).str.strip().apply(lambda x: str(x)[:-2] if str(x).endswith('.0') else str(x))
+    df['id_temp'] = df['id_login'].apply(clean_id)
     idx = df[df['id_temp'] == uid_str].index
     
     if not idx.empty:
@@ -382,7 +315,7 @@ def verificar_limite_diario_atividade(colaborador_id, atividade_nome):
     if tasks.empty: return False
     hoje_str = get_time_br().strftime("%d/%m")
     feitas = tasks[
-        (tasks['colaborador_id'].astype(str) == str(colaborador_id)) &
+        (tasks['colaborador_id'].apply(clean_id) == clean_id(colaborador_id)) &
         (tasks['atividade'] == atividade_nome) &
         (tasks['data_criacao'].astype(str).str.contains(hoje_str, na=False)) &
         (tasks['status'] != 'Rejeitada')
@@ -392,7 +325,7 @@ def verificar_limite_diario_atividade(colaborador_id, atividade_nome):
 def buscar_sku_interface_v2():
     df_sku = get_data("sku")
     if df_sku.empty:
-        st.warning("Base de SKUs vazia.")
+        st.warning("Base de SKUs vazia no Sheets.")
         return "-"
     df_sku['display'] = df_sku.iloc[:, 1].astype(str) + " | Cód: " + df_sku.iloc[:, 0].astype(str)
     opcoes = df_sku['display'].tolist()
@@ -426,10 +359,10 @@ def restore_session():
     if 'uid' in qp:
         uid = qp['uid']
         users = get_data("users")
-        uid_str = str(uid).strip()
-        if uid_str.endswith('.0'): uid_str = uid_str[:-2]
+        if users.empty: return False
         
-        users['id_temp'] = users['id_login'].astype(str).str.strip().apply(lambda x: str(x)[:-2] if str(x).endswith('.0') else str(x))
+        uid_str = clean_id(uid)
+        users['id_temp'] = users['id_login'].apply(clean_id)
         user = users[users['id_temp'] == uid_str]
         
         if not user.empty:
@@ -437,18 +370,50 @@ def restore_session():
             st.session_state['user_name'] = user.iloc[0]['nome']
             tipo = str(user.iloc[0]['tipo']).upper()
             
-            if st.session_state['user_id'] in SUPERVISORES_PERMITIDOS: 
-                st.session_state['role'] = 'Supervisor'
-            elif 'OPERADOR' in tipo: 
-                st.session_state['role'] = 'Operador'
-            elif 'CONFERENTE' in tipo: 
-                st.session_state['role'] = 'Conferente'
-            else: 
-                st.session_state['role'] = 'Colaborador'
+            meu_id_clean = clean_id(st.session_state['user_id'])
+            sups_clean = [clean_id(x) for x in SUPERVISORES_PERMITIDOS]
+            
+            if meu_id_clean in sups_clean: st.session_state['role'] = 'Supervisor'
+            elif 'OPERADOR' in tipo: st.session_state['role'] = 'Operador'
+            elif 'CONFERENTE' in tipo: st.session_state['role'] = 'Conferente'
+            else: st.session_state['role'] = 'Colaborador'
             return True
     return False
 
-# --- TELA DE REGRAS ---
+def login_screen():
+    st.markdown("<h1 style='text-align: center; color: #0054a6;'>ProTrack Logística 🚛</h1>", unsafe_allow_html=True)
+    col1, col2, col3 = st.columns([1,2,1])
+    with col2:
+        st.info("Insira o seu ID ou Matrícula")
+        lid = st.text_input("ID").strip()
+        
+        c_btn1, c_btn2 = st.columns([3, 1])
+        entrar_clicado = c_btn1.button("ENTRAR", use_container_width=True)
+        sinc_clicado = c_btn2.button("🔄 Sinc", help="Força a leitura do Google Sheets", use_container_width=True)
+        
+        if sinc_clicado:
+            st.success("Sincronizado com sucesso com o Google Sheets!")
+            time.sleep(0.5)
+            st.rerun()
+            
+        if entrar_clicado:
+            users = get_data("users")
+            if users.empty:
+                st.error("❌ Aba de utilizadores ('users') vazia ou não encontrada no Google Sheets.")
+                return
+
+            users['id_temp'] = users['id_login'].apply(clean_id)
+            lid_str = clean_id(lid)
+            
+            user = users[users['id_temp'] == lid_str]
+            if not user.empty:
+                id_original = str(user.iloc[0]['id_login']).replace('.0', '')
+                st.query_params["uid"] = id_original
+                time.sleep(0.1)
+                st.rerun()
+            else: 
+                st.error("❌ Utilizador não cadastrado.")
+
 def interface_regras():
     st.title("📜 Regras & Valores das Atividades")
     rules = get_data("rules")
@@ -460,8 +425,7 @@ def interface_regras():
     else: st.warning("Tabela de regras vazia.")
 
 def get_conferentes_disponiveis(users, criador_id=None):
-    if users.empty or 'tipo' not in users.columns:
-        return pd.DataFrame()
+    if users.empty or 'tipo' not in users.columns: return pd.DataFrame()
 
     confs = users[users['tipo'].astype(str).str.upper().str.contains('CONFERENTE|SUPERVISOR', na=False)].copy()
     confs = confs[~confs['nome'].astype(str).str.upper().str.contains('WEUDES|JULIANO', na=False)]
@@ -469,15 +433,13 @@ def get_conferentes_disponiveis(users, criador_id=None):
     if 'turno' in confs.columns:
         turno_atual = get_turno_atual()
         confs_turno = confs[confs['turno'].astype(str).str.upper().str.strip() == turno_atual]
-        if not confs_turno.empty:
-            confs = confs_turno
+        if not confs_turno.empty: confs = confs_turno
 
     if criador_id:
-        criador_id_str = str(criador_id).strip().replace('.0', '')
-        confs['id_clean'] = confs['id_login'].astype(str).str.strip().replace('.0', '')
+        criador_id_str = clean_id(criador_id)
+        confs['id_clean'] = confs['id_login'].apply(clean_id)
         confs_diferentes = confs[confs['id_clean'] != criador_id_str]
-        if not confs_diferentes.empty:
-            confs = confs_diferentes
+        if not confs_diferentes.empty: confs = confs_diferentes
 
     return confs
 
@@ -563,40 +525,42 @@ def render_menu_criar_tarefa(users, rules):
 def render_menu_aprovar_tarefas(users, tasks):
     st.title("✅ Aprovação")
     if not tasks.empty:
-        pends = tasks[(tasks['status'] == 'Aguardando Aprovação') & (~tasks['atividade'].isin(TODOS_KPIS))]
+        pends = tasks[(tasks['status'] == 'Aguardando Aprovação') & (~tasks['atividade'].isin(TODOS_KPIS))].copy()
         
         if st.session_state.get('role') == 'Conferente':
             nome_usuario = str(st.session_state.get('user_name', '')).upper()
-            meu_id = str(st.session_state['user_id']).replace('.0', '')
+            meu_id = clean_id(st.session_state['user_id'])
             
-            if meu_id in CONFERENTES_BLOQUEADOS or 'WEUDES' in nome_usuario or 'JULIANO' in nome_usuario:
+            if meu_id in [clean_id(x) for x in CONFERENTES_BLOQUEADOS] or 'WEUDES' in nome_usuario or 'JULIANO' in nome_usuario:
                 st.error("🔒 O seu acesso para aprovação está suspenso/bloqueado.")
                 return
                 
-            pends = pends[pends['conferente_id'].astype(str).str.replace('.0', '') == meu_id]
+            pends['conf_clean'] = pends['conferente_id'].apply(clean_id)
+            pends = pends[pends['conf_clean'] == meu_id]
         
         if pends.empty: 
             st.info("Nenhuma tarefa pendente no momento.")
             return
+        
+        users['colab_clean'] = users['id_login'].apply(clean_id)
+        users['conf_clean'] = users['id_login'].apply(clean_id)
         
         for i, row in pends.iterrows():
             k_approve = f"ok_{row['id_task']}_{i}"
             k_reject_btn = f"rej_btn_{row['id_task']}_{i}"
             k_reason = f"reason_{row['id_task']}_{i}"
             
-            cname_df = users[users['id_login'].astype(str) == str(row['colaborador_id'])]
+            cname_df = users[users['colab_clean'] == clean_id(row['colaborador_id'])]
             nome_colab_tarefa = cname_df.iloc[0]['nome'] if not cname_df.empty else 'Desconhecido'
             tipo_usuario = str(cname_df.iloc[0]['tipo']).upper() if not cname_df.empty else ""
             
-            conf_id_str = str(row['conferente_id']).strip().replace('.0', '')
-            
+            conf_id_str = clean_id(row['conferente_id'])
             if conf_id_str == 'SISTEMA': nome_conferente = "SISTEMA"
             else:
-                users['id_temp'] = users['id_login'].astype(str).str.strip().apply(lambda x: str(x)[:-2] if str(x).endswith('.0') else str(x))
-                c_df = users[users['id_temp'] == conf_id_str]
-                nome_conferente = c_df.iloc[0]['nome'] if not c_df.empty else f"ID {conf_id_str}"
+                c_df = users[users['conf_clean'] == conf_id_str]
+                nome_conferente = c_df.iloc[0]['nome'] if not c_df.empty else f"ID {row['conferente_id']}"
                 
-                if conf_id_str in CONFERENTES_BLOQUEADOS or 'WEUDES' in nome_conferente.upper() or 'JULIANO' in nome_conferente.upper():
+                if conf_id_str in [clean_id(x) for x in CONFERENTES_BLOQUEADOS] or 'WEUDES' in nome_conferente.upper() or 'JULIANO' in nome_conferente.upper():
                     nome_conferente = f"⚠️ {nome_conferente} (BLOQUEADO)"
             
             is_operador = 'OPERADOR' in tipo_usuario
@@ -646,31 +610,7 @@ def render_menu_aprovar_tarefas(users, tasks):
                             update_task_safe(row['id_task'], {'status': 'Rejeitada', 'obs_rejeicao': motivo})
                             st.rerun()
                 st.divider()
-    else: st.info("Sem tarefas.")
-
-# --- TELAS DO SISTEMA ---
-def login_screen():
-    st.markdown("<h1 style='text-align: center; color: #0054a6;'>ProTrack Logística 🚛</h1>", unsafe_allow_html=True)
-    col1, col2, col3 = st.columns([1,2,1])
-    with col2:
-        st.info("Insira o seu ID ou Matrícula")
-        lid = st.text_input("ID").strip()
-        if st.button("ENTRAR"):
-            users = get_data("users")
-            if users.empty:
-                st.error("Ficheiro de utilizadores vazio ou não encontrado.")
-                return
-
-            users['id_temp'] = users['id_login'].astype(str).str.strip().apply(lambda x: str(x)[:-2] if str(x).endswith('.0') else str(x))
-            lid_str = lid
-            if lid_str.endswith('.0'): lid_str = lid_str[:-2]
-            
-            user = users[users['id_temp'] == lid_str]
-            if not user.empty:
-                st.query_params["uid"] = lid_str
-                time.sleep(0.1)
-                st.rerun()
-            else: st.error("Utilizador não cadastrado.")
+    else: st.info("Sem tarefas pendentes.")
 
 def interface_supervisor():
     st.sidebar.header(f"👮 {st.session_state.get('user_name', 'Sup')}")
@@ -692,10 +632,11 @@ def interface_supervisor():
             pendentes = tasks[(tasks['status'] == 'Aguardando Validação') & (tasks['atividade'].isin(TODOS_KPIS))]
             if pendentes.empty: st.info("Tudo validado!")
             else:
+                users['colab_clean'] = users['id_login'].apply(clean_id)
                 for i, row in pendentes.iterrows():
                     k_ok = f"btn_ok_{row['id_task']}_{i}"
                     k_nok = f"btn_nok_{row['id_task']}_{i}"
-                    cname = users[users['id_login'].astype(str) == str(row['colaborador_id'])]['nome'].values
+                    cname = users[users['colab_clean'] == clean_id(row['colaborador_id'])]['nome'].values
                     nome_colab = cname[0] if len(cname) > 0 else row['colaborador_id']
                     
                     with st.container():
@@ -783,8 +724,8 @@ def interface_operador():
         
         ja_fez = False
         if not tasks.empty:
-            tasks['colaborador_id'] = tasks['colaborador_id'].astype(str)
-            ja_fez = not tasks[(tasks['colaborador_id']==uid) & (tasks['data_criacao'].str.contains(hoje)) & (tasks['atividade'].isin(KPI_OPERADOR))].empty
+            tasks['colab_clean'] = tasks['colaborador_id'].apply(clean_id)
+            ja_fez = not tasks[(tasks['colab_clean']==clean_id(uid)) & (tasks['data_criacao'].str.contains(hoje)) & (tasks['atividade'].isin(KPI_OPERADOR))].empty
         
         if ja_fez: st.info("✅ KPIs de hoje já enviados e aguardam validação.")
         else:
@@ -818,7 +759,8 @@ def interface_operador():
     elif menu == "Dashboard":
         st.title("📊 O Seu Desempenho")
         users = get_data("users")
-        meu_saldo = users[users['id_login'].astype(str) == uid]['rv_acumulada'].values
+        users['colab_clean'] = users['id_login'].apply(clean_id)
+        meu_saldo = users[users['colab_clean'] == clean_id(uid)]['rv_acumulada'].values
         saldo_real = float(meu_saldo[0]) if len(meu_saldo) > 0 else 0.0
         saldo_exibido = min(saldo_real, LIMITE_RV_OPERADOR)
         
@@ -827,7 +769,8 @@ def interface_operador():
         soma_kpis = 0.0
 
         if not tasks.empty:
-            minhas = tasks[(tasks['colaborador_id'].astype(str) == uid) & (tasks['status'] == 'Executada')]
+            tasks['colab_clean'] = tasks['colaborador_id'].apply(clean_id)
+            minhas = tasks[(tasks['colab_clean'] == clean_id(uid)) & (tasks['status'] == 'Executada')]
             total_tarefas = len(minhas)
             kpi_tasks = minhas[minhas['atividade'].isin(KPI_OPERADOR)]
             if not kpi_tasks.empty: soma_kpis = kpi_tasks['valor'].sum()
@@ -844,14 +787,14 @@ def interface_operador():
 
         st.subheader("Histórico Recente")
         if not tasks.empty:
-            hist = tasks[(tasks['colaborador_id'].astype(str) == uid)].sort_values('data_criacao', ascending=False).head(10)
+            hist = tasks[(tasks['colaborador_id'].apply(clean_id) == clean_id(uid))].sort_values('data_criacao', ascending=False).head(10)
             st.dataframe(hist[['data_criacao', 'atividade', 'status', 'valor']], use_container_width=True)
 
 def interface_conferente():
     nome_usuario = str(st.session_state.get('user_name', '')).upper()
-    meu_id = str(st.session_state['user_id']).replace('.0', '')
+    meu_id = clean_id(st.session_state['user_id'])
     
-    if meu_id in CONFERENTES_BLOQUEADOS or 'WEUDES' in nome_usuario or 'JULIANO' in nome_usuario:
+    if meu_id in [clean_id(x) for x in CONFERENTES_BLOQUEADOS] or 'WEUDES' in nome_usuario or 'JULIANO' in nome_usuario:
         st.sidebar.error("Acesso de Aprovação Suspenso")
         st.title("🔒 Bloqueio de Sistema")
         st.error("O seu perfil foi restrito para criar ou aprovar tarefas.")
@@ -879,8 +822,8 @@ def interface_colaborador_tarefas(uid):
         st.info("Nenhuma tarefa encontrada.")
         return
 
-    tasks['colaborador_id'] = tasks['colaborador_id'].astype(str)
-    mask_pend = (tasks['colaborador_id'] == str(uid)) & \
+    tasks['colab_clean'] = tasks['colaborador_id'].apply(clean_id)
+    mask_pend = (tasks['colab_clean'] == clean_id(uid)) & \
                 (tasks['status'].isin(['Pendente', 'Em Execução', 'Rejeitada'])) & \
                 (~tasks['atividade'].isin(TODOS_KPIS))
     todo = tasks[mask_pend].copy()
@@ -892,7 +835,7 @@ def interface_colaborador_tarefas(uid):
     todo['prazo_dt'] = pd.to_datetime(todo['prazo'], errors='coerce').fillna(pd.Timestamp('2099-12-31 23:59:59'))
     todo = todo.sort_values(by='prazo_dt', ascending=True)
     
-    users['id_temp'] = users['id_login'].astype(str).str.strip().apply(lambda x: str(x)[:-2] if str(x).endswith('.0') else str(x))
+    users['conf_clean'] = users['id_login'].apply(clean_id)
     
     for i, row in todo.iterrows():
         k_init = f"init_{row['id_task']}"
@@ -904,12 +847,10 @@ def interface_colaborador_tarefas(uid):
             if dt_p.year < 2090: prazo_exibicao = f" | ⏳ Prazo: {dt_p.strftime('%d/%m %H:%M')}"
         except: pass
             
-        conf_id_str = str(row['conferente_id']).strip()
-        if conf_id_str.endswith('.0'): conf_id_str = conf_id_str[:-2]
-        
+        conf_id_str = clean_id(row['conferente_id'])
         if conf_id_str == 'SISTEMA': nome_passou = "SISTEMA"
         else:
-            c_df = users[users['id_temp'] == conf_id_str]
+            c_df = users[users['conf_clean'] == conf_id_str]
             nome_passou = c_df.iloc[0]['nome'] if not c_df.empty else f"ID {conf_id_str}"
         
         with st.expander(f"{row['atividade']} ({row['status']}){prazo_exibicao}", expanded=True):
@@ -1013,8 +954,6 @@ def interface_colaborador_auto(uid):
     
     confs_df = get_conferentes_disponiveis(users, st.session_state.get('user_id'))
     confs = confs_df['nome'].tolist()
-    
-    ops = users[~users['tipo'].str.lower().str.contains('conferente|supervisor', na=False, regex=True)]['nome'].tolist()
     
     st.info(f"🕒 Exibindo Aprovadores do Turno **{get_turno_atual()}**")
     
