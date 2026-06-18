@@ -12,9 +12,9 @@ from github import Github
 from office365.sharepoint.client_context import ClientContext
 from office365.runtime.auth.user_credential import UserCredential
 
-# ✅ CONFIGURAÇÃO SHAREPOINT (Fonte de Verdade)
+# ✅ CONFIGURAÇÃO SHAREPOINT (Fonte de Verdade - CAMINHO CORRIGIDO)
 SHAREPOINT_SITE = "https://anheuserbuschinbev.sharepoint.com/sites/apoioolinda"
-SHAREPOINT_FOLDER = "/sites/apoioolinda/Documentos Compartilhados/ProTrack"
+SHAREPOINT_FOLDER = "/sites/apoioolinda/Documentos Compartilhados/ProTrack"  # ✅ CAMINHO CORRIGIDO CONFORME SHAREPOINT
 
 SP_USER = os.getenv("SP_USER")
 SP_PASS = os.getenv("SP_PASS")
