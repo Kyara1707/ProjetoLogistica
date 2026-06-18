@@ -7,5 +7,4 @@ google-auth-httplib2
 google-api-python-client
 requests
 openpyxl
-gspread==6.0.0
 gspread==6.1.0
