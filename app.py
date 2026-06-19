@@ -134,9 +134,16 @@ def clean_id(x):
     return s.lstrip('0') if s != '0' else '0'
 
 # --- CONEXÃO 100% GOOGLE SHEETS ---
+# --- CONEXÃO 100% GOOGLE SHEETS ---
 def get_gspread_client():
     if "gcp_service_account" in st.secrets:
+        # Puxa os dados dos Secrets
         creds_dict = dict(st.secrets["gcp_service_account"])
+        
+        # 🚨 CORREÇÃO CRÍTICA AQUI 🚨
+        # Garante que os "\n" na private_key sejam lidos como quebras de linha reais
+        creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
+        
         scopes = [
             'https://www.googleapis.com/auth/spreadsheets',
             'https://www.googleapis.com/auth/drive'
