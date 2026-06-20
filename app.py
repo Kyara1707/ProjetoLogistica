@@ -6,6 +6,8 @@ import time
 import uuid
 import random
 from github import Github 
+import json
+
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="ProTrack Logística", layout="wide", page_icon="🚛")
@@ -133,16 +135,26 @@ def clean_id(x):
     s = str(x).strip().replace('.0', '')
     return s.lstrip('0') if s != '0' else '0'
 
-# --- CONEXÃO 100% GOOGLE SHEETS ---
-# --- CONEXÃO 100% GOOGLE SHEETS ---
 def get_gspread_client():
-    if "gcp_service_account" in st.secrets:
-        # Puxa os dados dos Secrets
+    if "GOOGLE_JSON" in st.secrets:
+        try:
+            creds_dict = json.loads(st.secrets["GOOGLE_JSON"])
+            scopes = [
+                'https://www.googleapis.com/auth/spreadsheets',
+                'https://www.googleapis.com/auth/drive'
+            ]
+            creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+            return gspread.authorize(creds)
+        except Exception as e:
+            st.error(f"Erro ao ler o JSON: {e}")
+            return None
+            
+    # FORMA ANTIGA (Mantida apenas como segurança)
+    elif "gcp_service_account" in st.secrets:
         creds_dict = dict(st.secrets["gcp_service_account"])
-        
-        # 🚨 CORREÇÃO CRÍTICA AQUI 🚨
-        # Garante que os "\n" na private_key sejam lidos como quebras de linha reais
-        creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
+        # Força a correção de quebra de linhas e caracteres invisíveis do Windows
+        key = creds_dict["private_key"].replace("\\n", "\n").replace("\r", "")
+        creds_dict["private_key"] = key
         
         scopes = [
             'https://www.googleapis.com/auth/spreadsheets',
@@ -150,6 +162,7 @@ def get_gspread_client():
         ]
         creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
         return gspread.authorize(creds)
+        
     return None
 
 def get_data(filename):
