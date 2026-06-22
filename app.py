@@ -12,38 +12,36 @@ import json
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="ProTrack Logística", layout="wide", page_icon="🚛")
 
-# --- IMPORTAÇÕES PARA O GOOGLE SHEETS ---
-import gspread
-from google.oauth2.service_account import Credentials
+import requests
 
 # --- ESTILOS CSS ---
 st.markdown("""
-    <style>
-    .stButton>button {
-        border-radius: 8px;
-        background-color: #0054a6;
-        color: white;
-        border: none;
-        height: 40px;
-        font-weight: bold;
-    }
-    .stButton>button:hover {
-        background-color: #003d7a;
-    }
-    .metric-card {
-        background-color: #f8f9fa;
-        border: 1px solid #dee2e6;
-        padding: 20px;
-        border-radius: 10px;
-        text-align: center;
-        box-shadow: 2px 2px 5px rgba(0,0,0,0.05);
-    }
-    button[title="View fullscreen"] {
-        display: none;
-    }
-    h1, h2, h3 { color: #0054a6; }
-    </style>
-    """, unsafe_allow_html=True)
+<style>
+.stButton>button {
+    border-radius: 8px;
+    background-color: #0054a6;
+    color: white;
+    border: none;
+    height: 40px;
+    font-weight: bold;
+}
+.stButton>button:hover {
+    background-color: #003d7a;
+}
+.metric-card {
+    background-color: #f8f9fa;
+    border: 1px solid #dee2e6;
+    padding: 20px;
+    border-radius: 10px;
+    text-align: center;
+    box-shadow: 2px 2px 5px rgba(0,0,0,0.05);
+}
+button[title="View fullscreen"] {
+    display: none;
+}
+h1, h2, h3 { color: #0054a6; }
+</style>
+""", unsafe_allow_html=True)
 
 # --- CONFIGURAÇÕES GLOBAIS ---
 ATIVIDADES_POR_CARRO = ["DESCARREGAMENTO DE VAN"]
@@ -135,124 +133,100 @@ def clean_id(x):
     s = str(x).strip().replace('.0', '')
     return s.lstrip('0') if s != '0' else '0'
 
-def get_gspread_client():
-    if "GOOGLE_JSON" in st.secrets:
-        try:
-            creds_dict = json.loads(st.secrets["GOOGLE_JSON"])
-            scopes = [
-                'https://www.googleapis.com/auth/spreadsheets',
-                'https://www.googleapis.com/auth/drive'
-            ]
-            creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
-            return gspread.authorize(creds)
-        except Exception as e:
-            st.error(f"Erro ao ler o JSON: {e}")
-            return None
-            
-    # FORMA ANTIGA (Mantida apenas como segurança)
-    elif "gcp_service_account" in st.secrets:
-        creds_dict = dict(st.secrets["gcp_service_account"])
-        # Força a correção de quebra de linhas e caracteres invisíveis do Windows
-        key = creds_dict["private_key"].replace("\\n", "\n").replace("\r", "")
-        creds_dict["private_key"] = key
-        
-        scopes = [
-            'https://www.googleapis.com/auth/spreadsheets',
-            'https://www.googleapis.com/auth/drive'
-        ]
-        creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
-        return gspread.authorize(creds)
-        
-    return None
+def get_access_token():
+    url = f"https://login.microsoftonline.com/{st.secrets['TENANT_ID']}/oauth2/v2.0/token"
+
+    data = {
+        "grant_type": "client_credentials",
+        "client_id": st.secrets["CLIENT_ID"],
+        "client_secret": st.secrets["CLIENT_SECRET"],
+        "scope": "https://graph.microsoft.com/.default"
+    }
+
+    response = requests.post(url, data=data)
+    if response.status_code != 200:
+        st.error(f"Erro ao autenticar: {response.text}")
+        return None
+
+    return response.json().get("access_token")
+
+
+def download_file_from_sharepoint(filename):
+    token = get_access_token()
+    if not token:
+        return False
+
+    headers = {"Authorization": f"Bearer {token}"}
+
+    site = st.secrets["SHAREPOINT_SITE"]
+    folder = st.secrets["SHAREPOINT_FOLDER"]
+
+    drives = requests.get(
+        f"https://graph.microsoft.com/v1.0/sites/{site}/drives",
+        headers=headers
+    ).json()
+
+if "value" not in drives or not drives["value"]:
+    st.error("Drive SharePoint não encontrado")
+    return False
+
+drive_id = drives["value"][0]["id"]
+
+    url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/root:/{folder}/{filename}:/content"
+    r = requests.get(url, headers=headers)
+
+    if r.status_code == 200:
+        with open(filename, "wb") as f:
+            f.write(r.content)
+        return True
+
+    return False
+
+
+def upload_file_to_sharepoint(filename):
+    token = get_access_token()
+    if not token:
+        return
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/octet-stream"
+    }
+
+    site = st.secrets["SHAREPOINT_SITE"]
+    folder = st.secrets["SHAREPOINT_FOLDER"]
+
+    drives = requests.get(
+        f"https://graph.microsoft.com/v1.0/sites/{site}/drives",
+        headers=headers
+    ).json()
+
+    drive_id = drives["value"][0]["id"]
+
+    url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/root:/{folder}/{filename}:/content"
+
+    with open(filename, "rb") as f:
+        requests.put(url, headers=headers, data=f)
+
 
 def get_data(filename):
-    client = get_gspread_client()
-    if not client:
-        st.error("Erro: Credenciais do Google Sheets ausentes nos Secrets.")
-        return pd.DataFrame()
-        
-    sheet_id = st.secrets.get("SPREADSHEET_ID", "")
-    if not sheet_id:
-        st.error("Erro: SPREADSHEET_ID não configurado nos Secrets.")
-        return pd.DataFrame()
-        
-    try:
-        doc = client.open_by_key(sheet_id)
-        worksheet = doc.worksheet(filename)
-        data = worksheet.get_all_values()
-        
-        # Se a aba estiver vazia, cria e devolve a estrutura base
-        if not data:
-            if filename == 'tasks':
-                cols = ['id_task', 'colaborador_id', 'conferente_id', 'atividade', 'area', 'descricao', 
-                        'sku_produto', 'prioridade', 'status', 'valor', 'data_criacao', 'inicio_execucao', 
-                        'fim_execucao', 'tempo_total_min', 'obs_rejeicao', 'qtd_lata', 'qtd_pet', 
-                        'qtd_oneway', 'qtd_longneck', 'qtd_produzida', 'evidencia_img', 'prazo']
-                return pd.DataFrame(columns=cols)
-            elif filename == 'users':
-                return pd.DataFrame(columns=['nome', 'id_login', 'tipo', 'rv_acumulada', 'turno'])
-            elif filename == 'rules':
-                df_novo = pd.DataFrame(NOVAS_REGRAS)
-                save_data(df_novo, 'rules')
-                return df_novo
-            elif filename == 'sku':
-                return pd.DataFrame(columns=['codigo', 'descricao'])
-            else:
-                return pd.DataFrame()
+    file_xlsx = f"{filename}.xlsx"
 
-        headers = data.pop(0)
-        df = pd.DataFrame(data, columns=headers)
-        
-        if filename == 'tasks':
-            if 'prazo' not in df.columns: df['prazo'] = '2099-12-31 23:59:59'
-            df['valor'] = pd.to_numeric(df['valor'].astype(str).str.replace(',', '.'), errors='coerce').fillna(0.0)
-            df['tempo_total_min'] = pd.to_numeric(df['tempo_total_min'].astype(str).str.replace(',', '.'), errors='coerce').fillna(0.0)
-            
-        elif filename == 'users':
-            df.rename(columns={'Colaborador': 'nome', 'Id_colaborador': 'id_login', 'Cargo': 'tipo', 'Turno': 'turno'}, inplace=True)
-            if 'rv_acumulada' not in df.columns: df['rv_acumulada'] = 0.0
-            if 'turno' not in df.columns: df['turno'] = '-' 
-            df['rv_acumulada'] = pd.to_numeric(df['rv_acumulada'].astype(str).str.replace(',', '.'), errors='coerce').fillna(0.0)
-            
-        elif filename == 'rules':
-            df['valor'] = pd.to_numeric(df['valor'].astype(str).str.replace(',', '.'), errors='coerce').fillna(0.0)
-            
-        return df
+    if download_file_from_sharepoint(file_xlsx):
+        try:
+            return pd.read_excel(file_xlsx, engine="openpyxl")
+        except:
+            return pd.DataFrame()
 
-    except gspread.exceptions.WorksheetNotFound:
-        st.error(f"⚠️ A aba '{filename}' não existe na sua Planilha Google! Por favor, crie uma aba vazia com o nome '{filename}'.")
-        return pd.DataFrame()
-    except Exception as e:
-        st.error(f"Erro ao ler do Google Sheets ({filename}): {e}")
-        return pd.DataFrame()
+    return pd.DataFrame()
+
 
 def save_data(df, filename):
-    client = get_gspread_client()
-    if not client: return
-    sheet_id = st.secrets.get("SPREADSHEET_ID", "")
-    if not sheet_id: return
+    file_xlsx = f"{filename}.xlsx"
+
+    df.to_excel(file_xlsx, index=False, engine="openpyxl")
+    upload_file_to_sharepoint(file_xlsx)
     
-    try: 
-        doc = client.open_by_key(sheet_id)
-        worksheet = doc.worksheet(filename)
-        
-        df_out = df.copy()
-        if filename == 'users':
-            if 'rv_acumulada' in df_out.columns:
-                df_out['rv_acumulada'] = pd.to_numeric(df_out['rv_acumulada'], errors='coerce').fillna(0.0)
-                df_out['rv_acumulada'] = df_out['rv_acumulada'].apply(lambda x: f"{x:.2f}".replace('.', ','))
-            df_out.rename(columns={'nome': 'Colaborador', 'id_login': 'Id_colaborador', 'tipo': 'Cargo', 'turno': 'Turno'}, inplace=True)
-
-        if filename == 'tasks' and 'valor' in df_out.columns:
-            df_out['valor'] = pd.to_numeric(df_out['valor'], errors='coerce').fillna(0.0)
-            df_out['valor'] = df_out['valor'].apply(lambda x: f"{x:.2f}".replace('.', ','))
-            
-        df_out = df_out.fillna('') 
-        worksheet.clear()
-        worksheet.update(values=[df_out.columns.values.tolist()] + df_out.values.tolist())
-    except Exception as e: 
-        st.error(f"Erro ao salvar em '{filename}' no Google Sheets: {e}")
-
 # --- FUNÇÕES DE IMAGEM PARA O GITHUB ---
 def get_github_repo():
     if "GITHUB_TOKEN" in st.secrets and "GITHUB_REPO" in st.secrets:
@@ -345,7 +319,7 @@ def verificar_limite_diario_atividade(colaborador_id, atividade_nome):
 def buscar_sku_interface_v2():
     df_sku = get_data("sku")
     if df_sku.empty:
-        st.warning("Base de SKUs vazia no Sheets.")
+        st.warning("Base de SKUs vazia no Sharepoint.")
         return "-"
     df_sku['display'] = df_sku.iloc[:, 1].astype(str) + " | Cód: " + df_sku.iloc[:, 0].astype(str)
     opcoes = df_sku['display'].tolist()
@@ -409,17 +383,17 @@ def login_screen():
         
         c_btn1, c_btn2 = st.columns([3, 1])
         entrar_clicado = c_btn1.button("ENTRAR", use_container_width=True)
-        sinc_clicado = c_btn2.button("🔄 Sinc", help="Força a leitura do Google Sheets", use_container_width=True)
+        sinc_clicado = c_btn2.button("🔄 Sinc", help="Força a leitura do Sharepoint", use_container_width=True)
         
         if sinc_clicado:
-            st.success("Sincronizado com sucesso com o Google Sheets!")
+            st.success("Sincronizado com SharePoint!")
             time.sleep(0.5)
             st.rerun()
             
         if entrar_clicado:
             users = get_data("users")
             if users.empty:
-                st.error("❌ Aba de utilizadores ('users') vazia ou não encontrada no Google Sheets.")
+                st.error("Erro ao ler do SharePoint")
                 return
 
             users['id_temp'] = users['id_login'].apply(clean_id)
